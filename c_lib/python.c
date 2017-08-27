@@ -2,15 +2,7 @@
 
 #include <Python.h>
 
-#include <string.h>
-#include <errno.h>
-
-//----------------------------------------------------------------------------
-
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/wait.h>
+#include "supervisor.h"
 
 //----------------------------------------------------------------------------
 
@@ -40,7 +32,10 @@ int obj_init(ObjectInstance *self, PyObject *args, PyObject *kwargs)
   self->supervisor = -1;
   self->fd = -1;
 
-  // TODO: self->stuff = initialize(); if pipe/fork fail, return -1
+  if (supervisor_spawn(&self->supervisor, &self->fd) < 0) {
+    PyErr_SetFromErrno(PyExc_OSError);
+    return -1;
+  }
 
   return 0;
 }
@@ -48,13 +43,11 @@ int obj_init(ObjectInstance *self, PyObject *args, PyObject *kwargs)
 static
 void obj_dealloc(ObjectInstance *self)
 {
-  if (self->fd >= 0) {
-    close(self->fd);
-    self->fd = -1;
-  }
-  if (self->supervisor > 0) { // NOTE: PID will never have the value of 0
-    waitpid(self->supervisor, NULL, 0);
+  // NOTE: PID will never have the value of 0
+  if (self->fd >= 0 && self->supervisor > 0) {
+    supervisor_terminate(self->supervisor, self->fd);
     self->supervisor = -1;
+    self->fd = -1;
   }
 
   self->ob_type->tp_free((PyObject *)self);
@@ -91,6 +84,17 @@ PyObject* supervisor_fileno(ObjectInstance *self, PyObject *args)
   return Py_BuildValue("i", self->fd);
 }
 
+static
+PyObject* supervisor_pidof(ObjectInstance *self, PyObject *args)
+{
+  if (self->supervisor < 0) {
+    // uninitialized object
+    Py_INCREF(Py_None);
+    return Py_None;
+  }
+  return Py_BuildValue("i", self->supervisor);
+}
+
 // }}}
 //----------------------------------------------------------------------------
 
@@ -107,7 +111,9 @@ PyMethodDef object_methods[] = {
   {"recv", (PyCFunction)supervisor_recv, METH_VARARGS,
     "receive a binary event"},
   {"fileno", (PyCFunction)supervisor_fileno, METH_VARARGS,
-    "return events' file descriptor"},
+    "return supervisor's file descriptor"},
+  {"pidof", (PyCFunction)supervisor_pidof, METH_VARARGS,
+    "return supervisor's PID"},
   {NULL}  /* sentinel */
 };
 
