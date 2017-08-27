@@ -68,9 +68,43 @@ PyObject* supervisor_send(ObjectInstance *self, PyObject *args)
 static
 PyObject* supervisor_recv(ObjectInstance *self, PyObject *args)
 {
-  // TODO
-  Py_INCREF(Py_None);
-  return Py_None;
+  char buffer[1024];
+  size_t bufsize = 1024;
+  int fds[16];
+  size_t fdnum = 16;
+  int result = supervisor_read_event(self->fd, buffer, &bufsize, fds, &fdnum);
+
+  if (result < 0) {
+    PyErr_SetFromErrno(PyExc_OSError);
+    return NULL;
+  }
+
+  if (result == 0) {
+    Py_INCREF(Py_None);
+    return Py_None;
+  }
+
+  if (fdnum == 0)
+    return Py_BuildValue("s#O", buffer, bufsize, Py_None);
+  // else: fdnum > 0
+
+  PyObject *pyfds = PyList_New(fdnum);
+  if (pyfds == NULL)
+    return NULL;
+
+  int i;
+  for (i = 0; i < fdnum; ++i) {
+    PyObject *num = PyInt_FromLong(fds[i]);
+    if (num == NULL) {
+      Py_DECREF(pyfds);
+      return NULL;
+    }
+    PyList_SET_ITEM(pyfds, i, num);
+  }
+
+  PyObject *res = Py_BuildValue("s#O", buffer, bufsize, pyfds);
+  Py_DECREF(pyfds);
+  return res;
 }
 
 static
