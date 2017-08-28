@@ -160,13 +160,62 @@ int supervisor_read_event(struct sup_h *sup, void *data, size_t *size,
 //----------------------------------------------------------------------------
 // main loop of the supervisor
 
+int supervisor_send_event(int fd, void *data, size_t size,
+                          int *fds, size_t numfd)
+{
+  if (fds == NULL && numfd > 0) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  struct msghdr message;
+  memset(&message, 0, sizeof(message));
+
+  struct iovec msgvec = { .iov_base = data, .iov_len = size };
+  message.msg_iov = &msgvec;
+  message.msg_iovlen = 1;
+
+  char fdbuf[CMSG_SPACE(sizeof(int) * numfd)];
+  message.msg_control = fdbuf;
+  message.msg_controllen = sizeof(fdbuf);
+
+  struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message);
+  cmsg->cmsg_level = SOL_SOCKET;
+  cmsg->cmsg_type = SCM_RIGHTS;
+  cmsg->cmsg_len = CMSG_LEN(sizeof(int) * numfd);
+  memcpy(CMSG_DATA(cmsg), fds, sizeof(int) * numfd);
+  message.msg_controllen = cmsg->cmsg_len;
+
+  return sendmsg(fd, &message, MSG_NOSIGNAL);
+}
+
+#include <sys/stat.h>
+#include <fcntl.h>
+
 void supervisor_loop(int fd_comm, int fd_events)
 {
   // TODO: replace this stub
 
   char buffer[4096];
-  while (read(fd_comm, buffer, sizeof(buffer)) > 0) {
+  ssize_t bufsize;
+  while ((bufsize = read(fd_comm, buffer, sizeof(buffer))) > 0) {
     fprintf(stderr, "<%d> some data read\n", getpid());
+    if (buffer[0] == 'o' && buffer[1] != 0) {
+      if (bufsize == sizeof(buffer))
+        buffer[bufsize - 1] = 0;
+      else
+        buffer[bufsize] = 0;
+
+      int fd = open(buffer + 1, O_RDONLY);
+      if (fd < 0) {
+        supervisor_send_event(fd_events, "open failed", 11, NULL, 0);
+      } else {
+        supervisor_send_event(fd_events, "open ok", 7, &fd, 1);
+        close(fd);
+      }
+    } else {
+      supervisor_send_event(fd_events, "qwertyuiop", 10, NULL, 0);
+    }
   }
 
   fprintf(stderr, "<%d> EOF, child supervisor terminates\n", getpid());
