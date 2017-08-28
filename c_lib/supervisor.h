@@ -3,11 +3,17 @@
 
 #include <sys/types.h>
 
-int supervisor_spawn(pid_t *sup_pid, int *sup_fd);
-int supervisor_terminate(pid_t sup_pid, int sup_fd);
+struct sup_h {
+  pid_t pid;
+  int comm;
+  int events;
+};
 
-int supervisor_send_command(int sup_fd, void *data, size_t size);
-int supervisor_read_event(int sup_fd, void *data, size_t *size,
+int supervisor_spawn(struct sup_h *sup);
+int supervisor_terminate(struct sup_h *sup);
+
+int supervisor_send_command(struct sup_h *sup, void *data, size_t size);
+int supervisor_read_event(struct sup_h *sup, void *data, size_t *size,
                           int *received_fds, size_t *fd_count);
 
 #endif // __SUPERVISOR_H

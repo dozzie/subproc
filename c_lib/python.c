@@ -18,8 +18,7 @@
 // struct for object instance
 typedef struct {
   PyObject_HEAD
-  pid_t supervisor;
-  int fd;
+  struct sup_h sup;
 } ObjectInstance;
 
 //----------------------------------------------------------------------------
@@ -29,10 +28,7 @@ typedef struct {
 static
 int obj_init(ObjectInstance *self, PyObject *args, PyObject *kwargs)
 {
-  self->supervisor = -1;
-  self->fd = -1;
-
-  if (supervisor_spawn(&self->supervisor, &self->fd) < 0) {
+  if (supervisor_spawn(&self->sup) < 0) {
     PyErr_SetFromErrno(PyExc_OSError);
     return -1;
   }
@@ -43,13 +39,7 @@ int obj_init(ObjectInstance *self, PyObject *args, PyObject *kwargs)
 static
 void obj_dealloc(ObjectInstance *self)
 {
-  // NOTE: PID will never have the value of 0
-  if (self->fd >= 0 && self->supervisor > 0) {
-    supervisor_terminate(self->supervisor, self->fd);
-    self->supervisor = -1;
-    self->fd = -1;
-  }
-
+  supervisor_terminate(&self->sup);
   self->ob_type->tp_free((PyObject *)self);
 }
 
@@ -72,7 +62,7 @@ PyObject* supervisor_recv(ObjectInstance *self, PyObject *args)
   size_t bufsize = 1024;
   int fds[16];
   size_t fdnum = 16;
-  int result = supervisor_read_event(self->fd, buffer, &bufsize, fds, &fdnum);
+  int result = supervisor_read_event(&self->sup, buffer, &bufsize, fds, &fdnum);
 
   if (result < 0) {
     PyErr_SetFromErrno(PyExc_OSError);
@@ -110,23 +100,23 @@ PyObject* supervisor_recv(ObjectInstance *self, PyObject *args)
 static
 PyObject* supervisor_fileno(ObjectInstance *self, PyObject *args)
 {
-  if (self->fd < 0) {
+  if (self->sup.events < 0) {
     // uninitialized object
     Py_INCREF(Py_None);
     return Py_None;
   }
-  return Py_BuildValue("i", self->fd);
+  return Py_BuildValue("i", self->sup.events);
 }
 
 static
 PyObject* supervisor_pidof(ObjectInstance *self, PyObject *args)
 {
-  if (self->supervisor < 0) {
+  if (self->sup.pid < 0) {
     // uninitialized object
     Py_INCREF(Py_None);
     return Py_None;
   }
-  return Py_BuildValue("i", self->supervisor);
+  return Py_BuildValue("i", self->sup.pid);
 }
 
 // }}}
@@ -145,7 +135,7 @@ PyMethodDef object_methods[] = {
   {"recv", (PyCFunction)supervisor_recv, METH_VARARGS,
     "receive a binary event"},
   {"fileno", (PyCFunction)supervisor_fileno, METH_VARARGS,
-    "return supervisor's file descriptor"},
+    "return supervisor's events file descriptor"},
   {"pidof", (PyCFunction)supervisor_pidof, METH_VARARGS,
     "return supervisor's PID"},
   {NULL}  /* sentinel */
