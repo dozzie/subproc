@@ -50,9 +50,18 @@ void obj_dealloc(ObjectInstance *self)
 static
 PyObject* supervisor_send(ObjectInstance *self, PyObject *args)
 {
-  // TODO
-  Py_INCREF(Py_None);
-  return Py_None;
+  void *data;
+  int size;
+  if (!PyArg_ParseTuple(args, "s#", &data, &size))
+    return NULL;
+
+  int result = supervisor_send_command(&self->sup, data, size);
+  if (result < 0) {
+    PyErr_SetFromErrno(PyExc_OSError);
+    return NULL;
+  }
+
+  return Py_BuildValue("i", result);
 }
 
 static

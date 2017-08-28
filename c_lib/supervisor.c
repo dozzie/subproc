@@ -1,6 +1,7 @@
 //----------------------------------------------------------------------------
 
 #include <stdio.h>
+#include <string.h>
 
 #include <unistd.h>
 #include <sys/types.h>
@@ -94,23 +95,63 @@ int supervisor_terminate(struct sup_h *sup)
 
 int supervisor_send_command(struct sup_h *sup, void *data, size_t size)
 {
-  // TODO: fill me
-  errno = ENOSYS;
-  return -1;
+  return send(sup->comm, data, size, MSG_NOSIGNAL);
 }
 
 int supervisor_read_event(struct sup_h *sup, void *data, size_t *size,
                           int *received_fds, size_t *fd_count)
 {
-  // TODO: fill me
   // NOTE: write to `size' the actual number of data read
   // NOTE: write to `fd_count' the actual number of descriptors received
   // result:
   //   -1 -- error
   //    0 -- nothing to read
   //   >0 -- got some messages, `*size' and `*fd_count' updated
-  errno = ENOSYS;
-  return -1;
+
+  struct msghdr message;
+  memset(&message, 0, sizeof(message));
+
+  struct iovec msgvec = { .iov_base = data, .iov_len = *size };
+  message.msg_iov = &msgvec;
+  message.msg_iovlen = 1;
+
+  char fd_buffer[CMSG_SPACE(*fd_count * sizeof(int))];
+  memset(fd_buffer, 0, sizeof(fd_buffer));
+  message.msg_control = fd_buffer;
+  message.msg_controllen = sizeof(fd_buffer);
+
+  ssize_t result = recvmsg(sup->events, &message, MSG_DONTWAIT);
+  if (result < 0) {
+    *size = 0;
+    *fd_count = 0;
+    return (errno == EAGAIN || errno == EWOULDBLOCK) ? 0 : -1;
+  }
+  // result > 0
+  *size = result;
+
+  struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message);
+  while (cmsg != NULL &&
+         !(cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS)) {
+    cmsg = CMSG_NXTHDR(&message, cmsg);
+  }
+  if (cmsg == NULL) {
+    *fd_count = 0;
+    return 1;
+  }
+
+  size_t fd_copy_count = (cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+  int *fds = (int *)CMSG_DATA(cmsg); // let's trust this is aligned properly
+  size_t i;
+  for (i = 0; i < fd_copy_count; ++i) {
+    if (i < *fd_count)
+      received_fds[i] = fds[i];
+    else
+      close(fds[i]);
+  }
+  if (fd_copy_count < *fd_count)
+    *fd_count = fd_copy_count;
+
+  return 1;
 }
 
 // }}}
