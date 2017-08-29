@@ -10,6 +10,7 @@
 #include <errno.h>
 
 #include "supervisor.h"
+#include "protocol.h"
 
 //----------------------------------------------------------------------------
 
@@ -189,36 +190,88 @@ int supervisor_send_event(int fd, void *data, size_t size,
   return sendmsg(fd, &message, MSG_NOSIGNAL);
 }
 
-#include <sys/stat.h>
-#include <fcntl.h>
+void print_command(FILE *out, struct comm_t *comm);
+
+ssize_t read_whole(int fd, void *buffer, size_t size)
+{
+  unsigned char sizebuf[4];
+  // FIXME: we're ignoring partial reads that result from signals
+  if (recv(fd, &sizebuf, sizeof(sizebuf), MSG_WAITALL) != sizeof(sizebuf))
+    return -1;
+  size_t msgsize = (sizebuf[0] << 24) | (sizebuf[1] << 16) |
+                   (sizebuf[2] << 8) | (sizebuf[3]);
+  if (size < msgsize) {
+    // TODO: remember how long the pending message is
+    errno = ENOSPC;
+    return -1;
+  }
+  // FIXME: we're ignoring partial reads that result from signals -- again
+  if (recv(fd, buffer, msgsize, MSG_WAITALL) != msgsize)
+    return -1;
+  return msgsize;
+}
 
 void supervisor_loop(int fd_comm, int fd_events)
 {
   // TODO: replace this stub
 
-  char buffer[4096];
-  ssize_t bufsize;
-  while ((bufsize = read(fd_comm, buffer, sizeof(buffer))) > 0) {
-    fprintf(stderr, "<%d> some data read\n", getpid());
-    if (buffer[0] == 'o' && buffer[1] != 0) {
-      if (bufsize == sizeof(buffer))
-        buffer[bufsize - 1] = 0;
-      else
-        buffer[bufsize] = 0;
-
-      int fd = open(buffer + 1, O_RDONLY);
-      if (fd < 0) {
-        supervisor_send_event(fd_events, "open failed", 11, NULL, 0);
-      } else {
-        supervisor_send_event(fd_events, "open ok", 7, &fd, 1);
-        close(fd);
-      }
+  unsigned char buffer[64 * 1024];
+  ssize_t read_size;
+  while ((read_size = read_whole(fd_comm, buffer, sizeof(buffer))) > 0) {
+    struct comm_t cmd;
+    if (parse_command(buffer, read_size, &cmd) < 0) {
+      // NOTE: I assume here that read_size >= 4
+      fprintf(stderr, "<%d> unrecognized request: %02x %02x %02x %02x\n",
+              getpid(), buffer[0], buffer[1], buffer[2], buffer[3]);
     } else {
-      supervisor_send_event(fd_events, "qwertyuiop", 10, NULL, 0);
+      print_command(stdout, &cmd);
+      free_command(&cmd);
     }
   }
 
   fprintf(stderr, "<%d> EOF, child supervisor terminates\n", getpid());
+}
+
+void print_command(FILE *out, struct comm_t *comm)
+{
+  if (comm->type == comm_exec) {
+    fprintf(out, "## command: exec CMD=%s\n", comm->exec_opts.command);
+
+    if (comm->exec_opts.command == comm->exec_opts.argv[0])
+      fprintf(out, "### argv[0] the same as command\n");
+    else
+      fprintf(out, "### argv[0]: %s\n", comm->exec_opts.argv[0]);
+    if (comm->exec_opts.argv[1] == NULL) {
+      fprintf(out, "### args: []\n");
+    } else {
+      fprintf(out, "### args: [\"%s\"", comm->exec_opts.argv[1]);
+      char **arg;
+      for (arg = comm->exec_opts.argv + 2; *arg != NULL; ++arg)
+        fprintf(out, ", \"%s\"", *arg);
+      fprintf(out, "]\n");
+    }
+
+    if (comm->exec_opts.termsig)
+      fprintf(out, "## term signal: %d\n", comm->exec_opts.termsig);
+    else
+      fprintf(out, "## term signal: close FDs\n");
+
+    fprintf(out, "## STDIO: mode %d using %s\n", comm->exec_opts.stdio_mode,
+            (comm->exec_opts.stdio_socket ? "sockets" : "pipes"));
+    fprintf(out, "## STDERR %s\n",
+            (comm->exec_opts.stderr_to_stdout ? "redirected to STDOUT" : "goes to TTY"));
+
+    fprintf(out, "## CWD: %s\n", comm->exec_opts.cwd ? comm->exec_opts.cwd : "<no change>");
+    fprintf(out, "## UID: %d GID: %d NICE: %d pgroup: %s\n",
+            (comm->exec_opts.use_uid ? comm->exec_opts.uid : -1),
+            (comm->exec_opts.use_gid ? comm->exec_opts.gid : -1),
+            (comm->exec_opts.use_priority ? comm->exec_opts.priority : -0xffff),
+            (comm->exec_opts.use_pgroup ? "true" : "false"));
+  } else if (comm->type == comm_kill) {
+    fprintf(out, "## command: kill SIG=%d ID=%ld\n", comm->kill.signal, comm->kill.id);
+  } else if (comm->type == comm_shutdown) {
+    fprintf(out, "## command: shutdown\n");
+  }
 }
 
 //----------------------------------------------------------------------------
