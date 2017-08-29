@@ -68,9 +68,17 @@ class Supervisor:
         if nice is not None:
             request.extend(struct.pack(">Bb", 0x70, nice))
         if uid is not None: # TODO: string uid
-            request.extend(struct.pack(">BH", 0x75, uid))
-        if gid is not None: # TODO: string gid
-            request.extend(struct.pack(">BH", 0x67, gid))
+            if isinstance(uid, (int, long)):
+                request.extend(struct.pack(">BH", 0x75, uid))
+            else:
+                request.extend(struct.pack(">BH", 0x55, len(uid)))
+                request.extend(uid)
+        if gid is not None:
+            if isinstance(gid, (int, long)):
+                request.extend(struct.pack(">BH", 0x67, gid))
+            else:
+                request.extend(struct.pack(">BH", 0x47, len(gid)))
+                request.extend(gid)
         if cwd is not None:
             request.extend(struct.pack(">BH", 0x43, len(cwd)))
             request.extend(cwd)

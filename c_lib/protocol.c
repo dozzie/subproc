@@ -5,6 +5,7 @@
 #include <sys/types.h>
 #include <pwd.h>
 #include <grp.h>
+#include <errno.h>
 
 #include "protocol.h"
 
@@ -125,6 +126,30 @@ char* parse_string(unsigned char *data, size_t size, size_t *read_at)
   return result;
 }
 
+int get_user_uid(char *user, uid_t *uid)
+{
+  // TODO: use `getpwnam_r()'
+  errno = 0;
+  struct passwd *entry = getpwnam(user);
+  if (entry == NULL)
+    return -1;
+  *uid = entry->pw_uid;
+  return 0;
+}
+
+int get_group_gid(char *group, gid_t *gid)
+{
+  // TODO: use `getgrnam_r()'
+  errno = 0;
+  struct group *entry = getgrnam(group);
+  if (entry == NULL)
+    return -1;
+  *gid = entry->gr_gid;
+  return 0;
+}
+
+//----------------------------------------------------------------------------
+
 int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
 {
   // data[0] is a command tag
@@ -174,6 +199,7 @@ int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
   // TODO: list of env vars to clear
 
   char *argv0;
+  char *ugname;
   while (read_at < size) {
     switch (data[read_at++]) {
       // numeric options
@@ -206,12 +232,26 @@ int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
       break;
 
       // string options
-      //case OPT_USER:
-      //  TODO: implement me
-      //break;
-      //case OPT_GROUP:
-      //  TODO: implement me
-      //break;
+      case OPT_USER:
+        if ((ugname = parse_string(data, size, &read_at)) == NULL)
+          return ERR_PARSE;
+        if (get_user_uid(ugname, &comm->exec_opts.uid) < 0) {
+          free(ugname);
+          return ERR_NX_USER;
+        }
+        comm->exec_opts.use_uid = 1;
+        free(ugname);
+      break;
+      case OPT_GROUP:
+        if ((ugname = parse_string(data, size, &read_at)) == NULL)
+          return ERR_PARSE;
+        if (get_group_gid(ugname, &comm->exec_opts.gid) < 0) {
+          free(ugname);
+          return ERR_NX_GROUP;
+        }
+        comm->exec_opts.use_gid = 1;
+        free(ugname);
+      break;
       case OPT_CWD:
         if (comm->exec_opts.cwd != NULL)
           free(comm->exec_opts.cwd);
