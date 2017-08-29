@@ -61,6 +61,8 @@ PyObject* supervisor_send(ObjectInstance *self, PyObject *args)
     return NULL;
   }
 
+  // TODO: read ACK/NAK (or decode it from `result'?)
+
   return Py_BuildValue("i", result);
 }
 
@@ -71,6 +73,8 @@ PyObject* supervisor_recv(ObjectInstance *self, PyObject *args)
   size_t bufsize = 1024;
   int fds[16];
   size_t fdnum = 16;
+  // TODO: implement `self.recv(size = 20)' and wait for 20-byte buffer to be
+  // filled (or for EOF)
   int result = supervisor_read_event(&self->sup, buffer, &bufsize, fds, &fdnum);
 
   if (result < 0) {
