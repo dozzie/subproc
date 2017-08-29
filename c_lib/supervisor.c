@@ -37,16 +37,20 @@ int supervisor_spawn(struct sup_h *sup)
     return -1;
 
   if (socketpair(AF_UNIX, SOCK_STREAM, 0, events) < 0) {
+    int save_errno = errno;
     close(comm[0]);
     close(comm[1]);
+    errno = save_errno;
     return -1;
   }
 
   if ((pid = fork()) < 0) {
+    int save_errno = errno;
     close(comm[0]);
     close(comm[1]);
     close(events[0]);
     close(events[1]);
+    errno = save_errno;
     return -1;
   }
 
