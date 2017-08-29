@@ -43,18 +43,17 @@ int parse_command(void *data, size_t size, struct comm_t *comm)
 
   if (rdata[0] == TAG_COMM_EXEC && size > 2) {
     comm->type = comm_exec;
-    if (parse_exec_command(rdata, size, comm) < 0) {
+    int result = parse_exec_command(rdata, size, comm);
+    if (result < 0)
       free_command(comm);
-      return -1;
-    }
-    return 0;
+    return result;
   }
 
   if (rdata[0] == TAG_COMM_KILL && size == 2 + sizeof(uint64_t)) {
     comm->type = comm_kill;
     comm->kill.signal = rdata[1];
     if (comm->kill.signal > 32)
-      return -1;
+      return ERR_BAD_SIGNAL;
     comm->kill.id = ((uint64_t)rdata[2] << (8 * 7))
                   | ((uint64_t)rdata[3] << (8 * 6))
                   | ((uint64_t)rdata[4] << (8 * 5))
@@ -71,7 +70,7 @@ int parse_command(void *data, size_t size, struct comm_t *comm)
     return 0;
   }
 
-  return -1;
+  return ERR_BAD_REQ_HEADER;
 }
 
 void free_command(struct comm_t *comm)
@@ -144,7 +143,8 @@ int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
       comm->exec_opts.stdio_mode = in_out;
     break;
     default:
-      return -1;
+      // this should never happen, unless somebody changed FLAG_STDIO_MODE
+      return ERR_UNDEFINED;
   }
   comm->exec_opts.stdio_socket     = ((data[1] & FLAG_STDIO_SOCKET) != 0);
   comm->exec_opts.stderr_to_stdout = ((data[1] & FLAG_STDERR_TO_STDOUT) != 0);
@@ -152,10 +152,10 @@ int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
 
   size_t read_at = 2;
   if ((comm->exec_opts.command = parse_string(data, size, &read_at)) == NULL)
-    return -1;
+    return ERR_PARSE;
 
   if (size - read_at < 2)
-    return -1;
+    return ERR_PARSE;
   size_t nargs = (data[read_at] << 8) | (data[read_at + 1]);
   read_at += 2;
 
@@ -167,7 +167,7 @@ int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
   for (argi = 1; argi <= nargs; ++argi) {
     comm->exec_opts.argv[argi] = parse_string(data, size, &read_at);
     if (comm->exec_opts.argv[argi] == NULL)
-      return -1;
+      return ERR_PARSE;
   }
 
   // TODO: list of env vars to set
@@ -179,27 +179,27 @@ int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
       // numeric options
       case OPT_TERMSIG:
         if (size - read_at < 1)
-          return -1;
+          return ERR_BAD_SIGNAL;
         comm->exec_opts.termsig = data[read_at++];
         if (comm->exec_opts.termsig > 32)
-          return -1;
+          return ERR_BAD_SIGNAL;
       break;
       case OPT_PRIORITY:
         if (size - read_at < 1)
-          return -1;
+          return ERR_PARSE;
         comm->exec_opts.priority = (signed char)data[read_at++];
         comm->exec_opts.use_priority = 1;
       break;
       case OPT_UID:
         if (size - read_at < 2)
-          return -1;
+          return ERR_PARSE;
         comm->exec_opts.uid = (data[read_at] << 8) | (data[read_at + 1]);
         comm->exec_opts.use_uid = 1;
         read_at += 2;
       break;
       case OPT_GID:
         if (size - read_at < 2)
-          return -1;
+          return ERR_PARSE;
         comm->exec_opts.gid = (data[read_at] << 8) | (data[read_at + 1]);
         comm->exec_opts.use_gid = 1;
         read_at += 2;
@@ -217,19 +217,20 @@ int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
           free(comm->exec_opts.cwd);
         comm->exec_opts.cwd = parse_string(data, size, &read_at);
         if (comm->exec_opts.cwd == NULL)
-          return -1;
+          return ERR_PARSE;
       break;
       case OPT_ARGV0:
         argv0 = parse_string(data, size, &read_at);
         if (argv0 == NULL)
-          return -1;
+          return ERR_PARSE;
         if (comm->exec_opts.argv[0] != comm->exec_opts.command)
           free(comm->exec_opts.argv[0]);
         comm->exec_opts.argv[0] = argv0;
       break;
 
       default:
-        return -1;
+        // unrecognized option tag
+        return ERR_BAD_OPTION;
     }
   }
 

@@ -223,10 +223,11 @@ void supervisor_loop(int fd_comm, int fd_events)
   ssize_t read_size;
   while ((read_size = read_whole(fd_comm, buffer, sizeof(buffer))) > 0) {
     struct comm_t cmd;
-    if (parse_command(buffer, read_size, &cmd) < 0) {
+    int error;
+    if ((error = parse_command(buffer, read_size, &cmd)) < 0) {
       // NOTE: I assume here that read_size >= 4
-      fprintf(stderr, "<%d> unrecognized request: %02x %02x %02x %02x\n",
-              getpid(), buffer[0], buffer[1], buffer[2], buffer[3]);
+      fprintf(stderr, "<%d> bad request (error %d): %02x %02x %02x %02x\n",
+              getpid(), error, buffer[0], buffer[1], buffer[2], buffer[3]);
     } else {
       print_command(stdout, &cmd);
       free_command(&cmd);
