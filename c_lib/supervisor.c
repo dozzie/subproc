@@ -11,7 +11,7 @@
 #include <errno.h>
 
 #include "supervisor.h"
-#include "protocol.h"
+#include "proto_command.h"
 
 //----------------------------------------------------------------------------
 

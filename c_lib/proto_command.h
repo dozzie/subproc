@@ -1,5 +1,5 @@
-#ifndef __PROTOCOL_H
-#define __PROTOCOL_H
+#ifndef __PROTO_COMMAND_H
+#define __PROTO_COMMAND_H
 
 #include <stdint.h>
 #include <sys/types.h>
@@ -58,4 +58,4 @@ void build_ack(void *buffer, uint64_t id);
 void build_nack_req(void *buffer, int8_t error);
 void build_nack_os(void *buffer, int error);
 
-#endif // __PROTOCOL_H
+#endif // __PROTO_COMMAND_H

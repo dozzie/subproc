@@ -7,7 +7,7 @@
 #include <grp.h>
 #include <errno.h>
 
-#include "protocol.h"
+#include "proto_command.h"
 
 //----------------------------------------------------------------------------
 

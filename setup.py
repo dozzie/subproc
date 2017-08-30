@@ -14,7 +14,7 @@ setup(
             sources = [
                 "c_lib/python.c",
                 "c_lib/supervisor.c",
-                "c_lib/protocol.c",
+                "c_lib/proto_command.c",
             ],
         ),
     ],
