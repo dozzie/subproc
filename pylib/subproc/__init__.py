@@ -75,6 +75,73 @@ class SubprocOSError(SubprocError):
 
 # }}}
 #-----------------------------------------------------------------------------
+# events {{{
+
+class Child:
+    @staticmethod
+    def fdopen(fd, mode):
+        if fd is not None:
+            return os.fdopen(fd, mode)
+        return None
+
+    def __init__(self, cid, pid, child_in, child_out):
+        self.id = cid
+        self.pid = pid
+        self.child_in = Child.fdopen(child_in, "w")
+        self.child_out = Child.fdopen(child_out, "r")
+
+    def __repr__(self):
+        if self.child_in is None and self.child_out is not None:
+            mode = "r"
+        elif self.child_in is not None and self.child_out is None:
+            mode = "w"
+        else: # at least one is non-empty
+            if self.child_in == self.child_out:
+                mode = "b"
+            else:
+                mode = "rw"
+        return "<Child ID=%d PID=%d MODE=%s>" % (self.id, self.pid, mode)
+
+class SpawnError:
+    _STAGES = {
+        0: "fork()",
+        1: "setpriority()",
+        2: "setgid()",
+        3: "setuid()",
+        4: "chdir()",
+        5: "exec()",
+    }
+
+    def __init__(self, cid, stage, errno):
+        self.id = cid
+        self.errno = errno
+        self.stage = stage
+        self.strerror = os.strerror(errno)
+        self.strstage = SpawnError._STAGES.get(stage, "<unrecognized>")
+
+    def __repr__(self):
+        return "<SpawnError ID=%d %s=%d [%s]>" % (
+            self.id, self.strstage, self.errno, self.strerror
+        )
+
+class ChildExit:
+    def __init__(self, cid, code):
+        self.id = cid
+        self.exit_code = code
+
+    def __repr__(self):
+        return "<ChildExit ID=%d exit(%d)>" % (self.id, self.exit_code)
+
+class ChildSignal:
+    def __init__(self, cid, signal):
+        self.id = cid
+        self.signal = signal
+
+    def __repr__(self):
+        return "<ChildExit ID=%d kill(%d)>" % (self.id, self.signal)
+
+# }}}
+#-----------------------------------------------------------------------------
 
 class Supervisor:
     def __init__(self):
@@ -88,6 +155,39 @@ class Supervisor:
 
     def fileno(self):
         return self._sup.fileno()
+
+    def recv(self):
+        event = self._sup.recv()
+        if event is None:
+            return None
+        # XXX: all events have the same structure, only meaning of two of the
+        # fields is different
+        (evtype, mod, child_id, data) = struct.unpack(">BBQI", event[0])
+        if evtype == 0x73: # <spawn>
+            if mod == 0:
+                child_in  = event[1][0]
+                child_out = event[1][0]
+            elif mod == 1:
+                child_in  = event[1][0]
+                child_out = None
+            elif mod == 2:
+                child_in  = None
+                child_out = event[1][0]
+            elif mod == 3:
+                child_in  = event[1][0]
+                child_out = event[1][1]
+            else:
+                raise Exception("unrecognized STDIO mode")
+            return Child(cid = child_id, pid = data,
+                         child_in = child_in, child_out = child_out)
+        elif evtype == 0x65: # <spawn error>
+            return SpawnError(cid = child_id, stage = mod, errno = data)
+        elif evtype == 0x78: # <child exited>
+            return ChildExit(cid = child_id, code = data)
+        elif evtype == 0x6b: # <child killed>
+            return ChildSignal(cid = child_id, signal = data)
+        else:
+            raise Exception("unrecognized event")
 
     def run(self, command, args, env = None, termsig = 0,
             stdio_mode = STDIO_BIDIRECTIONAL, stderr_to_stdout = False,
