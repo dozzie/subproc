@@ -3,6 +3,7 @@
 #include <Python.h>
 
 #include "supervisor.h"
+#include "proto_event.h"
 
 //----------------------------------------------------------------------------
 
@@ -68,8 +69,8 @@ PyObject* supervisor_send(ObjectInstance *self, PyObject *args)
 static
 PyObject* supervisor_recv(ObjectInstance *self, PyObject *args)
 {
-  char buffer[1024];
-  size_t bufsize = 1024;
+  char buffer[EVENT_MESSAGE_SIZE];
+  size_t bufsize = EVENT_MESSAGE_SIZE;
   int fds[16];
   size_t fdnum = 16;
   // TODO: implement `self.recv(size = 20)' and wait for 20-byte buffer to be

@@ -15,6 +15,7 @@ setup(
                 "c_lib/python.c",
                 "c_lib/supervisor.c",
                 "c_lib/proto_command.c",
+                "c_lib/proto_event.c",
             ],
         ),
     ],
