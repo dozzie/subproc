@@ -4,10 +4,10 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-#define STDIO_MODE_BIDIR  0
-#define STDIO_MODE_IN     1
-#define STDIO_MODE_OUT    2
-#define STDIO_MODE_IN_OUT 3
+#define STDIO_MODE_BIDIR  0 // one FD, for both reading and writing
+#define STDIO_MODE_IN     1 // one FD, for parent to write to
+#define STDIO_MODE_OUT    2 // one FD, for parent to read from
+#define STDIO_MODE_IN_OUT 3 // two FDs, for parent to 0: write to, 1: read from
 
 #define STAGE_FORK        0
 #define STAGE_SETPRIORITY 1

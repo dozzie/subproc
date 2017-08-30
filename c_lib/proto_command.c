@@ -15,7 +15,7 @@
 #define TAG_COMM_KILL       0x02
 #define TAG_COMM_SHUTDOWN   0xff
 
-#define FLAG_STDIO_MODE         0x03 // mode (inout, in, out, in + out)
+#define FLAG_STDIO_MODE         0x03 // mode (bidir, in, out, in + out)
 #define FLAG_STDIO_SOCKET       0x04 // pipe or socket
 #define FLAG_STDERR_TO_STDOUT   0x08 // redirect STDERR to STDOUT
 #define FLAG_PGROUP             0x10 // spawn a command in its proc group

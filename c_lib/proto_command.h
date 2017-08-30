@@ -23,6 +23,11 @@ struct comm_t {
       // TODO: struct { char *name; char *value } *env_set;
       // TODO: char **env_clear;
       unsigned int termsig;
+      // modes:
+      //   bidirectional -- one descriptor for both reading and writing
+      //   in     -- one descriptor, for parent to write to
+      //   out    -- one descriptor, for parent to read from
+      //   in_out -- two descriptors, for parent to 0: write to, 1: read from
       enum { bidirectional, in, out, in_out } stdio_mode;
       uint8_t stdio_socket;
       uint8_t stderr_to_stdout;
