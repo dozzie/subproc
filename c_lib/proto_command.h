@@ -8,10 +8,11 @@
 #define ERR_PARSE           -1  // general request parse error
 #define ERR_BAD_REQ_HEADER  -2  // invalid request packet header
 #define ERR_BAD_SIGNAL      -3  // invalid signal number
-#define ERR_NX_USER         -4  // no such user
-#define ERR_NX_GROUP        -5  // no such group
-#define ERR_BAD_OPTION      -6  // unrecognized exec option tag
-#define ERR_NX_CHILD        -7  // no such child process
+#define ERR_BAD_STDIO       -4  // bidirectional STDIO requested for pipe
+#define ERR_NX_USER         -5  // no such user
+#define ERR_NX_GROUP        -6  // no such group
+#define ERR_BAD_OPTION      -7  // unrecognized exec option tag
+#define ERR_NX_CHILD        -8  // no such child process
 
 struct comm_t {
   enum { comm_exec, comm_kill, comm_shutdown } type;

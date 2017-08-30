@@ -37,15 +37,17 @@ class SubprocReqError(SubprocError):
     ERR_PARSE          =   -1 # general request parse error
     ERR_BAD_REQ_HEADER =   -2 # invalid request packet header
     ERR_BAD_SIGNAL     =   -3 # invalid signal number
-    ERR_NX_USER        =   -4 # no such user
-    ERR_NX_GROUP       =   -5 # no such group
-    ERR_BAD_OPTION     =   -6 # unrecognized exec option tag
-    ERR_NX_CHILD       =   -7 # no such child process
+    ERR_BAD_STDIO      =   -4 # bidirectional STDIO requested for pipe
+    ERR_NX_USER        =   -5 # no such user
+    ERR_NX_GROUP       =   -6 # no such group
+    ERR_BAD_OPTION     =   -7 # unrecognized exec option tag
+    ERR_NX_CHILD       =   -8 # no such child process
     _ERROR_MESSAGES = {
         ERR_UNDEFINED:      "Development error (should never happen)",
         ERR_PARSE:          "Bad request format",
         ERR_BAD_REQ_HEADER: "Unrecognized request type",
         ERR_BAD_SIGNAL:     "Invalid signal number",
+        ERR_BAD_STDIO:      "Bidirectional STDIO requested for pipe",
         ERR_NX_USER:        "No such user",
         ERR_NX_GROUP:       "No such group",
         ERR_BAD_OPTION:     "Unrecognized option",

@@ -213,6 +213,11 @@ int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
   comm->exec_opts.stderr_to_stdout = ((data[1] & FLAG_STDERR_TO_STDOUT) != 0);
   comm->exec_opts.use_pgroup       = ((data[1] & FLAG_PGROUP) != 0);
 
+  if (comm->exec_opts.stdio_mode == bidirectional &&
+      !comm->exec_opts.stdio_socket)
+    // this one is only available for sockets
+    return ERR_BAD_STDIO;
+
   size_t read_at = 2;
   if ((comm->exec_opts.command = parse_string(data, size, &read_at)) == NULL)
     return ERR_PARSE;
