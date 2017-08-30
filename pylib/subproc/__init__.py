@@ -106,12 +106,16 @@ class Child:
 
 class SpawnError:
     _STAGES = {
-        0: "fork()",
-        1: "setpriority()",
-        2: "setgid()",
-        3: "setuid()",
-        4: "chdir()",
-        5: "exec()",
+        0: "pipe(stdin)",
+        1: "pipe(stdout)",
+        2: "socketpair(stdin)",
+        3: "socketpair(stdout)",
+        4: "fork()",
+        5: "setpriority()",
+        6: "setgid()",
+        7: "setuid()",
+        8: "chdir()",
+        9: "exec()",
     }
 
     def __init__(self, cid, stage, errno):

@@ -9,12 +9,16 @@
 #define STDIO_MODE_OUT    2 // one FD, for parent to read from
 #define STDIO_MODE_IN_OUT 3 // two FDs, for parent to 0: write to, 1: read from
 
-#define STAGE_FORK        0
-#define STAGE_SETPRIORITY 1
-#define STAGE_SETGID      2
-#define STAGE_SETUID      3
-#define STAGE_CHDIR       4
-#define STAGE_EXEC        5
+#define STAGE_PIPE_IN         0
+#define STAGE_PIPE_OUT        1
+#define STAGE_SOCKETPAIR_IN   2
+#define STAGE_SOCKETPAIR_OUT  3
+#define STAGE_FORK            4
+#define STAGE_SETPRIORITY     5
+#define STAGE_SETGID          6
+#define STAGE_SETUID          7
+#define STAGE_CHDIR           8
+#define STAGE_EXEC            9
 
 struct event_t {
   enum { event_spawn, event_spawn_error, event_exit, event_signal } type;
