@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
+#include <signal.h>
 #include <errno.h>
 
 #include "supervisor.h"
@@ -98,9 +99,16 @@ int supervisor_terminate(struct sup_h *sup)
 //----------------------------------------------------------------------------
 // send/receive messages {{{
 
-int supervisor_send_command(struct sup_h *sup, void *data, size_t size)
+int supervisor_send_command(struct sup_h *sup, void *data, size_t size,
+                            void *reply)
 {
-  return send(sup->comm, data, size, MSG_NOSIGNAL);
+  // NOTE: reply buffer should be ACK_MESSAGE_SIZE bytes large
+  int result = send(sup->comm, data, size, MSG_NOSIGNAL);
+  if (result < 0)
+    return result;
+  result = recv(sup->comm, reply, ACK_MESSAGE_SIZE, MSG_WAITALL);
+  // FIXME: we're ignoring the possibility of a partial read
+  return result;
 }
 
 int supervisor_read_event(struct sup_h *sup, void *data, size_t *size,
@@ -230,7 +238,25 @@ void supervisor_loop(int fd_comm, int fd_events)
               getpid(), error, buffer[0], buffer[1], buffer[2], buffer[3]);
     } else {
       print_command(stdout, &cmd);
+      char reply[ACK_MESSAGE_SIZE];
+      if (cmd.type == comm_exec) {
+        if (strcmp(cmd.exec_opts.command, "fail") != 0)
+          build_ack(reply, 182038444);
+        else
+          build_nack_req(reply, ERR_BAD_OPTION);
+      } else if (cmd.type == comm_kill) {
+        if (cmd.kill.id != 182038444)
+          build_nack_req(reply, ERR_NX_CHILD);
+        else if (cmd.kill.signal == SIGTERM)
+          build_nack_os(reply, EPERM);
+        else
+          build_ack(reply, 0);
+      } else { // cmd.type == comm_shutdown
+        build_ack(reply, 0);
+      }
       free_command(&cmd);
+      // FIXME: we're ignoring send() errors here
+      send(fd_comm, reply, sizeof(reply), MSG_NOSIGNAL);
     }
   }
 

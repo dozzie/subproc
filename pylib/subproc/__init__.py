@@ -2,9 +2,11 @@
 
 import _unix
 import struct
+import os
 
 __all__ = [
     "Supervisor",
+    "SubprocError", "SubprocReqError", "SubprocOSError",
     "STDIO_BIDIRECTIONAL", "STDIO_IN", "STDIO_OUT", "STDIO_IN_OUT",
 ]
 
@@ -24,6 +26,54 @@ _FLAG_STDIO_SOCKET     = 0x04
 _FLAG_STDERR_TO_STDOUT = 0x08
 _FLAG_PGROUP           = 0x10
 
+#-----------------------------------------------------------------------------
+# exceptions {{{
+
+class SubprocError(Exception):
+    pass
+
+class SubprocReqError(SubprocError):
+    ERR_UNDEFINED      = -128 # a situation that should never happen (development error)
+    ERR_PARSE          =   -1 # general request parse error
+    ERR_BAD_REQ_HEADER =   -2 # invalid request packet header
+    ERR_BAD_SIGNAL     =   -3 # invalid signal number
+    ERR_NX_USER        =   -4 # no such user
+    ERR_NX_GROUP       =   -5 # no such group
+    ERR_BAD_OPTION     =   -6 # unrecognized exec option tag
+    ERR_NX_CHILD       =   -7 # no such child process
+    _ERROR_MESSAGES = {
+        ERR_UNDEFINED:      "Development error (should never happen)",
+        ERR_PARSE:          "Bad request format",
+        ERR_BAD_REQ_HEADER: "Unrecognized request type",
+        ERR_BAD_SIGNAL:     "Invalid signal number",
+        ERR_NX_USER:        "No such user",
+        ERR_NX_GROUP:       "No such group",
+        ERR_BAD_OPTION:     "Unrecognized option",
+        ERR_NX_CHILD:       "No such child process",
+    }
+    def __init__(self, code, message = None):
+        if message is None:
+            message = SubprocReqError._ERROR_MESSAGES.get(code, "unrecognized error code")
+        super(SubprocReqError, self).__init__(code, message)
+        self.code = code
+        self.message = message
+
+    def __str__(self):
+        return "[Error %d] %s" % (self.code, self.message)
+
+class SubprocOSError(SubprocError):
+    def __init__(self, errno, strerror = None):
+        if strerror is None:
+            strerror = os.strerror(errno)
+        super(SubprocOSError, self).__init__(errno, strerror)
+        self.errno = errno
+        self.strerror = strerror
+        self.message = ""
+
+    def __str__(self):
+        return "[Errno %d] %s" % (self.errno, self.strerror)
+
+# }}}
 #-----------------------------------------------------------------------------
 
 class Supervisor:
@@ -85,20 +135,31 @@ class Supervisor:
         if argv0 is not None:
             request.extend(struct.pack(">BH", 0x30, len(argv0)))
             request.extend(argv0)
-        self._command(buffer(request))
+        return self._command(buffer(request))
 
     def kill(self, id, signal = 0):
+        # NOTE: ignore returned `id'
         self._command(struct.pack(">BBQ", _TAG_CMD_KILL, signal, id))
 
     def shutdown(self):
+        # NOTE: ignore returned `id'
         self._command(struct.pack(">BB", _TAG_CMD_SHUTDOWN, 0x00))
 
     def _command(self, payload):
         request = bytearray(len(payload) + 4)
         struct.pack_into(">I", request, 0, len(payload))
         request[4:] = payload
-        self._sup.send(buffer(request))
-        # TODO: wait for reply
+        (size, reply) = self._sup.send(buffer(request))
+        if len(reply) != 10:
+            raise SubprocError("reply too short")
+        elif reply[0:2] == "\x01\x00":
+            return struct.unpack(">Q", reply[2:])[0]
+        elif reply[0:2] == "\x02\x01": # request error
+            raise SubprocReqError(struct.unpack(">b", reply[2])[0])
+        elif reply[0:2] == "\x02\x02": # OS error
+            raise SubprocOSError(struct.unpack(">I", reply[2:6])[0])
+        else:
+            raise SubprocError("unrecognized reply")
 
 #-----------------------------------------------------------------------------
-# vim:ft=python
+# vim:ft=python:foldmethod=marker

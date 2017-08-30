@@ -46,4 +46,16 @@ struct comm_t {
 int parse_command(void *data, size_t size, struct comm_t *comm);
 void free_command(struct comm_t *comm);
 
+// <ok:     0x01 0x00> <id:64>
+// <reqerr: 0x02 0x01> <error:8>  <zero:56> // ERR_*
+// <oserr:  0x02 0x02> <errno:32> <zero:32>
+#ifndef ACK_MESSAGE_SIZE
+#  define ACK_MESSAGE_SIZE 10
+#endif
+
+// buffer should be ACK_MESSAGE_SIZE bytes large
+void build_ack(void *buffer, uint64_t id);
+void build_nack_req(void *buffer, int8_t error);
+void build_nack_os(void *buffer, int error);
+
 #endif // __PROTOCOL_H

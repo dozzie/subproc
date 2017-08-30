@@ -55,15 +55,14 @@ PyObject* supervisor_send(ObjectInstance *self, PyObject *args)
   if (!PyArg_ParseTuple(args, "s#", &data, &size))
     return NULL;
 
-  int result = supervisor_send_command(&self->sup, data, size);
+  char reply[ACK_MESSAGE_SIZE];
+  int result = supervisor_send_command(&self->sup, data, size, reply);
   if (result < 0) {
     PyErr_SetFromErrno(PyExc_OSError);
     return NULL;
   }
 
-  // TODO: read ACK/NAK (or decode it from `result'?)
-
-  return Py_BuildValue("i", result);
+  return Py_BuildValue("is#", result, reply, sizeof(reply));
 }
 
 static

@@ -108,6 +108,44 @@ void free_command(struct comm_t *comm)
 
 //----------------------------------------------------------------------------
 
+void build_ack(void *buffer, uint64_t id)
+{
+  unsigned char *wdata = buffer;
+  wdata[0] = 0x01;
+  wdata[1] = 0x00;
+  wdata[2] = 0xff & (id >> (8 * 7));
+  wdata[3] = 0xff & (id >> (8 * 6));
+  wdata[4] = 0xff & (id >> (8 * 5));
+  wdata[5] = 0xff & (id >> (8 * 4));
+  wdata[6] = 0xff & (id >> (8 * 3));
+  wdata[7] = 0xff & (id >> (8 * 2));
+  wdata[8] = 0xff & (id >> (8 * 1));
+  wdata[9] = 0xff & (id >> (8 * 0));
+}
+
+void build_nack_req(void *buffer, int8_t error)
+{
+  memset(buffer, 0, ACK_MESSAGE_SIZE);
+  unsigned char *wdata = buffer;
+  wdata[0] = 0x02;
+  wdata[1] = 0x01;
+  wdata[2] = error;
+}
+
+void build_nack_os(void *buffer, int error)
+{
+  memset(buffer, 0, ACK_MESSAGE_SIZE);
+  unsigned char *wdata = buffer;
+  wdata[0] = 0x02;
+  wdata[1] = 0x02;
+  wdata[2] = 0xff & ((unsigned int)error >> (8 * 3));
+  wdata[3] = 0xff & ((unsigned int)error >> (8 * 2));
+  wdata[4] = 0xff & ((unsigned int)error >> (8 * 1));
+  wdata[5] = 0xff & ((unsigned int)error >> (8 * 0));
+}
+
+//----------------------------------------------------------------------------
+
 char* parse_string(unsigned char *data, size_t size, size_t *read_at)
 {
   if (size - *read_at < 2)
