@@ -69,12 +69,12 @@ PyObject* supervisor_send(ObjectInstance *self, PyObject *args)
 static
 PyObject* supervisor_recv(ObjectInstance *self, PyObject *args)
 {
+  // XXX: event protocol guarantees that an event message is of fixed size and
+  // carries at most two file descriptors
   char buffer[EVENT_MESSAGE_SIZE];
   size_t bufsize = EVENT_MESSAGE_SIZE;
-  int fds[16];
-  size_t fdnum = 16;
-  // TODO: implement `self.recv(size = 20)' and wait for 20-byte buffer to be
-  // filled (or for EOF)
+  int fds[2];
+  size_t fdnum = 2;
   int result = supervisor_read_event(&self->sup, buffer, &bufsize, fds, &fdnum);
 
   if (result < 0) {

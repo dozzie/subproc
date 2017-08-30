@@ -19,6 +19,8 @@ int supervisor_terminate(struct sup_h *sup);
 // reply buffer should be ACK_MESSAGE_SIZE bytes large
 int supervisor_send_command(struct sup_h *sup, void *data, size_t size,
                             void *reply);
+// event is of fixed size and up to two file descriptors
+// see also `proto_event.h'
 int supervisor_read_event(struct sup_h *sup, void *data, size_t *size,
                           int *received_fds, size_t *fd_count);
 
