@@ -16,6 +16,7 @@ setup(
                 "c_lib/supervisor.c",
                 "c_lib/proto_command.c",
                 "c_lib/proto_event.c",
+                "c_lib/int_pack.c",
             ],
         ),
     ],

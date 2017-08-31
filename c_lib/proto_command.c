@@ -8,6 +8,7 @@
 #include <errno.h>
 
 #include "proto_command.h"
+#include "int_pack.h"
 
 //----------------------------------------------------------------------------
 
@@ -55,14 +56,7 @@ int parse_command(void *data, size_t size, struct comm_t *comm)
     comm->kill.signal = rdata[1];
     if (comm->kill.signal > 32)
       return ERR_BAD_SIGNAL;
-    comm->kill.id = ((uint64_t)rdata[2] << (8 * 7))
-                  | ((uint64_t)rdata[3] << (8 * 6))
-                  | ((uint64_t)rdata[4] << (8 * 5))
-                  | ((uint64_t)rdata[5] << (8 * 4))
-                  | ((uint64_t)rdata[6] << (8 * 3))
-                  | ((uint64_t)rdata[7] << (8 * 2))
-                  | ((uint64_t)rdata[8] << (8 * 1))
-                  | ((uint64_t)rdata[9] << (8 * 0));
+    comm->kill.id = unpack64(rdata + 2);
     return 0;
   }
 
@@ -113,14 +107,7 @@ void build_ack(void *buffer, uint64_t id)
   unsigned char *wdata = buffer;
   wdata[0] = 0x01;
   wdata[1] = 0x00;
-  wdata[2] = 0xff & (id >> (8 * 7));
-  wdata[3] = 0xff & (id >> (8 * 6));
-  wdata[4] = 0xff & (id >> (8 * 5));
-  wdata[5] = 0xff & (id >> (8 * 4));
-  wdata[6] = 0xff & (id >> (8 * 3));
-  wdata[7] = 0xff & (id >> (8 * 2));
-  wdata[8] = 0xff & (id >> (8 * 1));
-  wdata[9] = 0xff & (id >> (8 * 0));
+  store64(wdata + 2, id);
 }
 
 void build_nack_req(void *buffer, int8_t error)
@@ -138,10 +125,7 @@ void build_nack_os(void *buffer, int error)
   unsigned char *wdata = buffer;
   wdata[0] = 0x02;
   wdata[1] = 0x02;
-  wdata[2] = 0xff & ((unsigned int)error >> (8 * 3));
-  wdata[3] = 0xff & ((unsigned int)error >> (8 * 2));
-  wdata[4] = 0xff & ((unsigned int)error >> (8 * 1));
-  wdata[5] = 0xff & ((unsigned int)error >> (8 * 0));
+  store32(wdata + 2, error);
 }
 
 //----------------------------------------------------------------------------
@@ -151,9 +135,10 @@ char* parse_string(unsigned char *data, size_t size, size_t *read_at)
   if (size - *read_at < 2)
     return NULL;
 
-  size_t read_size = (data[*read_at] << 8) | (data[*read_at + 1]);
+  size_t read_size = unpack16(data + *read_at);
 
   if (read_size == 0)
+    // FIXME: this can be a valid value in some cases
     return NULL;
 
   if (size - (*read_at + 2) < read_size)
@@ -224,7 +209,7 @@ int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
 
   if (size - read_at < 2)
     return ERR_PARSE;
-  size_t nargs = (data[read_at] << 8) | (data[read_at + 1]);
+  size_t nargs = unpack16(data + read_at);
   read_at += 2;
 
   // argv has two more entries: argv[0] (command name) and NULL ward
@@ -262,14 +247,14 @@ int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
       case OPT_UID:
         if (size - read_at < 2)
           return ERR_PARSE;
-        comm->exec_opts.uid = (data[read_at] << 8) | (data[read_at + 1]);
+        comm->exec_opts.uid = unpack16(data + read_at);
         comm->exec_opts.use_uid = 1;
         read_at += 2;
       break;
       case OPT_GID:
         if (size - read_at < 2)
           return ERR_PARSE;
-        comm->exec_opts.gid = (data[read_at] << 8) | (data[read_at + 1]);
+        comm->exec_opts.gid = unpack16(data + read_at);
         comm->exec_opts.use_gid = 1;
         read_at += 2;
       break;

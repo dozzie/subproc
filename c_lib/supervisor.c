@@ -12,6 +12,7 @@
 
 #include "supervisor.h"
 #include "proto_command.h"
+#include "int_pack.h"
 
 //----------------------------------------------------------------------------
 
@@ -210,8 +211,7 @@ ssize_t read_whole(int fd, void *buffer, size_t size)
   // FIXME: we're ignoring partial reads that result from signals
   if (recv(fd, &sizebuf, sizeof(sizebuf), MSG_WAITALL) != sizeof(sizebuf))
     return -1;
-  size_t msgsize = (sizebuf[0] << 24) | (sizebuf[1] << 16) |
-                   (sizebuf[2] << 8) | (sizebuf[3]);
+  size_t msgsize = unpack32(sizebuf);
   if (size < msgsize) {
     // TODO: remember how long the pending message is
     errno = ENOSPC;
