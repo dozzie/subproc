@@ -205,20 +205,43 @@ int supervisor_send_event(int fd, void *data, size_t size,
 
 void print_command(FILE *out, struct comm_t *comm);
 
+ssize_t recvall(int fd, void *buffer, size_t size, int flags)
+{
+  uint8_t *wbuf = buffer;
+  size_t to_fill = size;
+  ssize_t received;
+  do {
+    received = recv(fd, wbuf + (size - to_fill), to_fill, flags | MSG_WAITALL);
+  } while ((received > 0 && (to_fill -= received) > 0) ||
+           (received < 0 && errno == EINTR));
+
+  return (received >= 0) ? size - to_fill : -1;
+}
+
+void recvdiscard(int fd, size_t size)
+{
+  char buf[4096];
+  ssize_t received;
+  do {
+    received = recv(fd, buf, (size > sizeof(buf)) ? sizeof(buf) : size, 0);
+  } while ((received > 0 && (size -= received) > 0) ||
+           (received < 0 && errno == EINTR));
+}
+
 ssize_t read_whole(int fd, void *buffer, size_t size)
 {
   unsigned char sizebuf[4];
-  // FIXME: we're ignoring partial reads that result from signals
-  if (recv(fd, &sizebuf, sizeof(sizebuf), MSG_WAITALL) != sizeof(sizebuf))
+  if (recvall(fd, &sizebuf, sizeof(sizebuf), 0) != sizeof(sizebuf))
+    // TODO: set `errno' on incomplete message (EBADMSG? ECONNRESET? EIO?)
     return -1;
   size_t msgsize = unpack32(sizebuf);
   if (size < msgsize) {
-    // TODO: remember how long the pending message is
-    errno = ENOSPC;
+    recvdiscard(fd, msgsize);
+    errno = EMSGSIZE;
     return -1;
   }
-  // FIXME: we're ignoring partial reads that result from signals -- again
-  if (recv(fd, buffer, msgsize, MSG_WAITALL) != msgsize)
+  if (recvall(fd, buffer, msgsize, 0) != msgsize)
+    // TODO: set `errno' on incomplete message (EBADMSG? ECONNRESET? EIO?)
     return -1;
   return msgsize;
 }
