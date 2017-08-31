@@ -12,4 +12,4 @@ install:
 
 clean:
 	python setup.py $@ --all
-	rm -rf *.egg-info
+	rm -rf pylib/*.egg-info
