@@ -227,7 +227,8 @@ void supervisor_loop(int fd_comm, int fd_events)
 {
   // TODO: replace this stub
 
-  unsigned char buffer[64 * 1024];
+  size_t buffer_size = 16 * 1024 + sysconf(_SC_ARG_MAX);
+  unsigned char buffer[buffer_size];
   ssize_t read_size;
   while ((read_size = read_whole(fd_comm, buffer, sizeof(buffer))) > 0) {
     struct comm_t cmd;
