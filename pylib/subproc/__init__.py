@@ -6,6 +6,7 @@ import os
 
 __all__ = [
     "Supervisor",
+    "Child", "SpawnError", "ChildExit", "ChildSignal",
     "SubprocError", "SubprocReqError", "SubprocOSError",
     "STDIO_BIDIRECTIONAL", "STDIO_IN", "STDIO_OUT", "STDIO_IN_OUT",
 ]
