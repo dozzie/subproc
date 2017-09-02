@@ -172,10 +172,35 @@ int supervisor_read_event(struct sup_h *sup, void *data, size_t *size,
 //----------------------------------------------------------------------------
 
 //----------------------------------------------------------------------------
-// main loop of the supervisor
+// supervisor internals
+//----------------------------------------------------------------------------
 
-int supervisor_send_event(int fd, void *data, size_t size,
-                          int *fds, size_t numfd)
+//----------------------------------------------------------------------------
+// receive commands, send events {{{
+
+void recvdiscard(int fd, size_t size);
+ssize_t recvall(int fd, void *buffer, size_t size, int flags);
+
+ssize_t supervisor_read_command(int fd, void *buffer, size_t size)
+{
+  unsigned char sizebuf[4];
+  if (recvall(fd, &sizebuf, sizeof(sizebuf), 0) != sizeof(sizebuf))
+    // TODO: set `errno' on incomplete message (EBADMSG? ECONNRESET? EIO?)
+    return -1;
+  size_t msgsize = unpack32(sizebuf);
+  if (size < msgsize) {
+    recvdiscard(fd, msgsize);
+    errno = EMSGSIZE;
+    return -1;
+  }
+  if (recvall(fd, buffer, msgsize, 0) != msgsize)
+    // TODO: set `errno' on incomplete message (EBADMSG? ECONNRESET? EIO?)
+    return -1;
+  return msgsize;
+}
+
+ssize_t supervisor_send_event(int fd, void *data, size_t size,
+                              int *fds, size_t numfd)
 {
   if (fds == NULL && numfd > 0) {
     errno = EINVAL;
@@ -203,7 +228,8 @@ int supervisor_send_event(int fd, void *data, size_t size,
   return sendmsg(fd, &message, MSG_NOSIGNAL);
 }
 
-void print_command(FILE *out, struct comm_t *comm);
+//----------------------------------------------------------
+// recv*() helpers {{{
 
 ssize_t recvall(int fd, void *buffer, size_t size, int flags)
 {
@@ -228,23 +254,14 @@ void recvdiscard(int fd, size_t size)
            (received < 0 && errno == EINTR));
 }
 
-ssize_t read_whole(int fd, void *buffer, size_t size)
-{
-  unsigned char sizebuf[4];
-  if (recvall(fd, &sizebuf, sizeof(sizebuf), 0) != sizeof(sizebuf))
-    // TODO: set `errno' on incomplete message (EBADMSG? ECONNRESET? EIO?)
-    return -1;
-  size_t msgsize = unpack32(sizebuf);
-  if (size < msgsize) {
-    recvdiscard(fd, msgsize);
-    errno = EMSGSIZE;
-    return -1;
-  }
-  if (recvall(fd, buffer, msgsize, 0) != msgsize)
-    // TODO: set `errno' on incomplete message (EBADMSG? ECONNRESET? EIO?)
-    return -1;
-  return msgsize;
-}
+// }}}
+//----------------------------------------------------------
+
+// }}}
+//----------------------------------------------------------------------------
+// main loop
+
+void print_command(FILE *out, struct comm_t *comm);
 
 void supervisor_loop(int fd_comm, int fd_events)
 {
@@ -253,7 +270,7 @@ void supervisor_loop(int fd_comm, int fd_events)
   size_t buffer_size = 16 * 1024 + sysconf(_SC_ARG_MAX);
   unsigned char buffer[buffer_size];
   ssize_t read_size;
-  while ((read_size = read_whole(fd_comm, buffer, sizeof(buffer))) > 0) {
+  while ((read_size = supervisor_read_command(fd_comm, buffer, sizeof(buffer))) > 0) {
     struct comm_t cmd;
     int error;
     if ((error = parse_command(buffer, read_size, &cmd)) < 0) {
