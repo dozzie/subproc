@@ -5,6 +5,7 @@
 #include <sys/types.h>
 
 #define ERR_UNDEFINED     -128  // a situation that should never happen (development error)
+#define ERR_CHILD_SPACE   -127  // can't register more children
 #define ERR_PARSE           -1  // general request parse error
 #define ERR_BAD_REQ_HEADER  -2  // invalid request packet header
 #define ERR_BAD_SIGNAL      -3  // invalid signal number

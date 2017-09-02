@@ -437,7 +437,13 @@ void supervisor_loop(int fd_comm, int fd_events)
 
     if (cmd.type == comm_exec) {
       child_t *child = child_add(&children);
-      // TODO: return NAK when `child == NULL'
+
+      if (child == NULL) {
+        build_nack_req(reply, ERR_CHILD_SPACE);
+        send(fd_comm, reply, sizeof(reply), MSG_NOSIGNAL); // ignore send errors
+        free_command(&cmd); // XXX: this is important here
+        continue;
+      }
 
       // NOTE: send an ACK immediately
       build_ack(reply, child->id);
@@ -526,7 +532,7 @@ int child_spawn(struct comm_t *cmd, child_t *child, void *buffer, int *fds)
   if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds_confirm) < 0) {
     event.type = event_spawn_error;
     event.id = child->id;
-    event.error.stage = STAGE_PIPE_IN; // FIXME: this is wrong stage
+    event.error.stage = STAGE_CONFIRM_CHAN;
     event.error.error = errno;
     build_event(buffer, &event);
     return 0;

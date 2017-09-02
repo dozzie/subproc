@@ -35,6 +35,7 @@ class SubprocError(Exception):
 
 class SubprocReqError(SubprocError):
     ERR_UNDEFINED      = -128 # a situation that should never happen (development error)
+    ERR_CHILD_SPACE    = -127 # no more space for registering children
     ERR_PARSE          =   -1 # general request parse error
     ERR_BAD_REQ_HEADER =   -2 # invalid request packet header
     ERR_BAD_SIGNAL     =   -3 # invalid signal number
@@ -45,6 +46,7 @@ class SubprocReqError(SubprocError):
     ERR_NX_CHILD       =   -8 # no such child process
     _ERROR_MESSAGES = {
         ERR_UNDEFINED:      "Development error (should never happen)",
+        ERR_CHILD_SPACE:    "No more space for registering children",
         ERR_PARSE:          "Bad request format",
         ERR_BAD_REQ_HEADER: "Unrecognized request type",
         ERR_BAD_SIGNAL:     "Invalid signal number",
@@ -107,16 +109,17 @@ class Child:
 
 class SpawnError:
     _STAGES = {
-        0: "pipe(stdin)",
-        1: "pipe(stdout)",
-        2: "socketpair(stdin)",
-        3: "socketpair(stdout)",
-        4: "fork()",
-        5: "setpriority()",
-        6: "setgid()",
-        7: "setuid()",
-        8: "chdir()",
-        9: "exec()",
+        0: "socketpair(confirm)",
+        1: "pipe(stdin)",
+        2: "pipe(stdout)",
+        3: "socketpair(stdin)",
+        4: "socketpair(stdout)",
+        5: "fork()",
+        6: "setpriority()",
+        7: "setgid()",
+        8: "setuid()",
+        9: "chdir()",
+        10: "exec()",
     }
 
     def __init__(self, cid, stage, errno):
