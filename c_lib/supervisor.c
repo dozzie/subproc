@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <poll.h>
+#include <fcntl.h>
 
 #include "supervisor.h"
 #include "proto_command.h"
@@ -463,19 +464,231 @@ void supervisor_loop(int fd_comm, int fd_events)
 //----------------------------------------------------------
 // spawn a child process {{{
 
+#define READ_END  0
+#define WRITE_END 1
+
+int create_pipe(int *fds, int socket)
+{
+  if (!socket)
+    return pipe(fds);
+
+  int result = socketpair(AF_UNIX, SOCK_STREAM, 0, fds);
+  if (result == 0) {
+    shutdown(fds[READ_END], SHUT_WR);
+    shutdown(fds[WRITE_END], SHUT_RD);
+  }
+  return result;
+}
+
 int child_spawn(struct comm_t *cmd, child_t *child, void *buffer, int *fds)
 {
-  // TODO: child->pid = fork();
-  // TODO: child->termsig = cmd.exec_opts.termsig;
-  // TODO: child->pgroup = cmd.exec_opts.use_pgroup;
+  int fds_confirm[2] = { -1, -1 }; // FD pair for exec() confirmation
+  int fds_stdin[2]   = { -1, -1 }; // FD pair for child's STDIN
+  int fds_stdout[2]  = { -1, -1 }; // FD pair for child's STDOUT
+  struct event_t event;
 
-  struct event_t event = {
-    .type = event_spawn_error,
-    .id = child->id,
-    .error = { .stage = STAGE_EXEC, .error = ENOSYS }
-  };
-  build_event(buffer, &event);
-  return 0; // number of FDs returned, 0 in case of a failure
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds_confirm) < 0) {
+    event.type = event_spawn_error;
+    event.id = child->id;
+    event.error.stage = STAGE_PIPE_IN; // FIXME: this is wrong stage
+    event.error.error = errno;
+    build_event(buffer, &event);
+    return 0;
+  }
+  fcntl(fds_confirm[WRITE_END], F_SETFD,
+        FD_CLOEXEC | fcntl(fds_confirm[WRITE_END], F_GETFD));
+
+  if (cmd->exec_opts.stdio_mode == bidirectional) { // socketpair
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds_stdin) < 0) {
+      event.type = event_spawn_error;
+      event.id = child->id;
+      event.error.stage = STAGE_SOCKETPAIR_IN;
+      event.error.error = errno;
+      build_event(buffer, &event);
+      return 0;
+    }
+    //fds_stdout[READ_END] = fds_stdin[WRITE_END];
+    //fds_stdout[WRITE_END] = fds_stdin[READ_END];
+  }
+
+  if (cmd->exec_opts.stdio_mode == in || cmd->exec_opts.stdio_mode == in_out) {
+    if (create_pipe(fds_stdin, cmd->exec_opts.stdio_socket) < 0) {
+      event.type = event_spawn_error;
+      event.id = child->id;
+      event.error.stage = cmd->exec_opts.stdio_socket ?
+                            STAGE_SOCKETPAIR_IN :
+                            STAGE_PIPE_IN;
+      event.error.error = errno;
+      build_event(buffer, &event);
+      return 0;
+    }
+  }
+
+  if (cmd->exec_opts.stdio_mode == out || cmd->exec_opts.stdio_mode == in_out) {
+    if (create_pipe(fds_stdout, cmd->exec_opts.stdio_socket) < 0) {
+      event.type = event_spawn_error;
+      event.id = child->id;
+      event.error.stage = cmd->exec_opts.stdio_socket ?
+                            STAGE_SOCKETPAIR_OUT :
+                            STAGE_PIPE_OUT;
+      event.error.error = errno;
+      build_event(buffer, &event);
+      return 0;
+    }
+  }
+
+  pid_t pid = fork();
+
+  if (pid < 0) {
+    event.type = event_spawn_error;
+    event.id = child->id;
+    event.error.stage = STAGE_FORK;
+    event.error.error = errno;
+    build_event(buffer, &event);
+
+    close(fds_confirm[READ_END]);
+    close(fds_confirm[WRITE_END]);
+    if (fds_stdin[READ_END] >= 0) {
+      close(fds_stdin[READ_END]);
+      close(fds_stdin[WRITE_END]);
+    }
+    if (fds_stdout[READ_END] >= 0) {
+      close(fds_stdout[READ_END]);
+      close(fds_stdout[WRITE_END]);
+    }
+    return 0;
+  }
+
+  if (pid > 0) {
+    // parent
+    close(fds_confirm[WRITE_END]);
+    if (fds_stdin[READ_END] >= 0)
+      close(fds_stdin[READ_END]);
+    if (fds_stdout[WRITE_END] >= 0)
+      close(fds_stdout[WRITE_END]);
+
+    int confirm[2]; // stage, errno
+    if (recvall(fds_confirm[READ_END], confirm, sizeof(confirm), 0) > 0) {
+      // when a problem is encountered, the child process will send both the
+      // stage and errno
+      close(fds_confirm[READ_END]);
+      if (fds_stdin[WRITE_END] >= 0)
+        close(fds_stdin[WRITE_END]);
+      if (fds_stdout[READ_END] >= 0)
+        close(fds_stdout[READ_END]);
+
+      waitpid(pid, NULL, 0);
+
+      event.type = event_spawn_error;
+      event.id = child->id;
+      event.error.stage = confirm[0];
+      event.error.error = confirm[1];
+      build_event(buffer, &event);
+      return 0;
+    }
+
+    // no error message, confirmation channel must have been closed on exec()
+    close(fds_confirm[READ_END]);
+
+    child->pid = pid;
+    child->termsig = cmd->exec_opts.termsig;
+    child->pgroup = cmd->exec_opts.use_pgroup;
+
+    event.type = event_spawn;
+    event.id = child->id;
+    event.spawn.pid = pid;
+    if (cmd->exec_opts.stdio_mode == bidirectional)
+      event.spawn.stdio_mode = STDIO_MODE_BIDIR;
+    else if (cmd->exec_opts.stdio_mode == in)
+      event.spawn.stdio_mode = STDIO_MODE_IN;
+    else if (cmd->exec_opts.stdio_mode == out)
+      event.spawn.stdio_mode = STDIO_MODE_OUT;
+    else if (cmd->exec_opts.stdio_mode == in_out)
+      event.spawn.stdio_mode = STDIO_MODE_IN_OUT;
+    build_event(buffer, &event);
+
+    int result = 0;
+    // NOTE: at least one of these should be open, so `result' will not stay
+    // at zero
+    if (fds_stdin[WRITE_END] >= 0)
+      fds[result++] = fds_stdin[WRITE_END];
+    if (fds_stdout[READ_END] >= 0)
+      fds[result++] = fds_stdout[READ_END];
+
+    return result;
+  }
+
+  // XXX: child process
+
+  close(fds_confirm[READ_END]);
+
+  if (fds_stdin[READ_END] >= 0) {
+    dup2(fds_stdin[READ_END], 0);
+  } else {
+    // FIXME: don't assume this always succeeds (mind the chroots!)
+    // NOTE: the original descriptor will be closed later by a big close loop
+    dup2(open("/dev/null", O_RDONLY), 0);
+  }
+
+  if (fds_stdout[WRITE_END] >= 0) {
+    dup2(fds_stdout[WRITE_END], 1);
+  } else {
+    // FIXME: don't assume this always succeeds (mind the chroots!)
+    // NOTE: the original descriptor will be closed later by a big close loop
+    dup2(open("/dev/null", O_WRONLY), 1);
+  }
+
+  if (cmd->exec_opts.stderr_to_stdout)
+    dup2(1, 2);
+
+  if (cmd->exec_opts.use_pgroup)
+    setpgid(0, 0);
+
+  if (cmd->exec_opts.use_priority) {
+    if (setpriority(PRIO_PROCESS, 0, cmd->exec_opts.priority) < 0) {
+      int error[2] = { STAGE_SETPRIORITY, errno };
+      send(fds_confirm[WRITE_END], error, sizeof(error), MSG_NOSIGNAL);
+      _exit(255);
+    }
+  }
+
+  if (cmd->exec_opts.use_gid) {
+    if (setgid(cmd->exec_opts.gid) < 0) {
+      int error[2] = { STAGE_SETGID, errno };
+      send(fds_confirm[WRITE_END], error, sizeof(error), MSG_NOSIGNAL);
+      _exit(255);
+    }
+  }
+
+  if (cmd->exec_opts.use_uid) {
+    if (setuid(cmd->exec_opts.uid) < 0) {
+      int error[2] = { STAGE_SETUID, errno };
+      send(fds_confirm[WRITE_END], error, sizeof(error), MSG_NOSIGNAL);
+      _exit(255);
+    }
+  }
+
+  if (cmd->exec_opts.cwd != NULL) {
+    if (chdir(cmd->exec_opts.cwd) < 0) {
+      int error[2] = { STAGE_CHDIR, errno };
+      send(fds_confirm[WRITE_END], error, sizeof(error), MSG_NOSIGNAL);
+      _exit(255);
+    }
+  }
+
+  int fd;
+  int maxfd = sysconf(_SC_OPEN_MAX);
+  for (fd = 3; fd < maxfd; ++fd)
+    if (fd != fds_confirm[WRITE_END])
+      close(fd);
+
+  // TODO: set environment
+
+  execve(cmd->exec_opts.command, cmd->exec_opts.argv, NULL);
+  // if we got here, exec() must have failed
+  int error[2] = { STAGE_EXEC, errno };
+  send(fds_confirm[WRITE_END], error, sizeof(error), MSG_NOSIGNAL);
+  _exit(255);
 }
 
 // }}}
