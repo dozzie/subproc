@@ -23,6 +23,8 @@
 
 void supervisor_loop(int fd_comm, int fd_events);
 
+void set_close_on_exec(int fd);
+
 //----------------------------------------------------------------------------
 // public functions
 //----------------------------------------------------------------------------
@@ -35,16 +37,29 @@ int supervisor_spawn(struct sup_h *sup)
   pid_t pid;
   int comm[2];
   int events[2];
+  int devnullr;
+  int devnullw;
+  if ((devnullr = open("/dev/null", O_RDONLY)) < 0)
+    return -1;
+  if ((devnullw = open("/dev/null", O_WRONLY)) < 0)
+    return -1;
 
   sup->pid = -1;
   sup->comm = -1;
   sup->events = -1;
 
-  if (socketpair(AF_UNIX, SOCK_STREAM, 0, comm) < 0)
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, comm) < 0) {
+    int save_errno = errno;
+    close(devnullr);
+    close(devnullw);
+    errno = save_errno;
     return -1;
+  }
 
   if (socketpair(AF_UNIX, SOCK_STREAM, 0, events) < 0) {
     int save_errno = errno;
+    close(devnullr);
+    close(devnullw);
     close(comm[0]);
     close(comm[1]);
     errno = save_errno;
@@ -53,6 +68,8 @@ int supervisor_spawn(struct sup_h *sup)
 
   if ((pid = fork()) < 0) {
     int save_errno = errno;
+    close(devnullr);
+    close(devnullw);
     close(comm[0]);
     close(comm[1]);
     close(events[0]);
@@ -62,13 +79,32 @@ int supervisor_spawn(struct sup_h *sup)
   }
 
   if (pid == 0) {
-    close(comm[1]);
-    close(events[1]);
+    dup2(devnullr, 0);
+    dup2(devnullw, 1);
+    // STDERR stays as it was
+
+    // NOTE: these four should be closed by the loop that follows
+    //close(devnullr);
+    //close(devnullw);
+    //close(comm[1]);
+    //close(events[1]);
+
+    int fd;
+    int maxfd = sysconf(_SC_OPEN_MAX);
+    for (fd = 3; fd < maxfd; ++fd)
+      if (fd != comm[0] && fd != events[0])
+        close(fd);
+
+    set_close_on_exec(comm[0]);
+    set_close_on_exec(events[0]);
+
     shutdown(events[0], SHUT_RD);
     supervisor_loop(comm[0], events[0]);
     _exit(0);
   }
 
+  close(devnullr);
+  close(devnullw);
   close(comm[0]);
   close(events[0]);
   shutdown(events[1], SHUT_WR);
@@ -495,8 +531,7 @@ int child_spawn(struct comm_t *cmd, child_t *child, void *buffer, int *fds)
     build_event(buffer, &event);
     return 0;
   }
-  fcntl(fds_confirm[WRITE_END], F_SETFD,
-        FD_CLOEXEC | fcntl(fds_confirm[WRITE_END], F_GETFD));
+  set_close_on_exec(fds_confirm[WRITE_END]);
 
   if (cmd->exec_opts.stdio_mode == bidirectional) { // socketpair
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds_stdin) < 0) {
@@ -621,21 +656,18 @@ int child_spawn(struct comm_t *cmd, child_t *child, void *buffer, int *fds)
   // XXX: child process
 
   close(fds_confirm[READ_END]);
+  close(fds_stdin[WRITE_END]);
+  close(fds_stdout[READ_END]);
 
+  // NOTE: parent (supervisor) has STDIN and STDOUT redirected to /dev/null
+  // and all the file descriptors closed (or with FD_CLOEXEC flag set)
   if (fds_stdin[READ_END] >= 0) {
     dup2(fds_stdin[READ_END], 0);
-  } else {
-    // FIXME: don't assume this always succeeds (mind the chroots!)
-    // NOTE: the original descriptor will be closed later by a big close loop
-    dup2(open("/dev/null", O_RDONLY), 0);
+    close(fds_stdin[READ_END]);
   }
-
   if (fds_stdout[WRITE_END] >= 0) {
     dup2(fds_stdout[WRITE_END], 1);
-  } else {
-    // FIXME: don't assume this always succeeds (mind the chroots!)
-    // NOTE: the original descriptor will be closed later by a big close loop
-    dup2(open("/dev/null", O_WRONLY), 1);
+    close(fds_stdout[WRITE_END]);
   }
 
   if (cmd->exec_opts.stderr_to_stdout)
@@ -675,12 +707,6 @@ int child_spawn(struct comm_t *cmd, child_t *child, void *buffer, int *fds)
       _exit(255);
     }
   }
-
-  int fd;
-  int maxfd = sysconf(_SC_OPEN_MAX);
-  for (fd = 3; fd < maxfd; ++fd)
-    if (fd != fds_confirm[WRITE_END])
-      close(fd);
 
   // TODO: set environment
 
@@ -728,6 +754,12 @@ pid_t child_next_event(struct children_t *children, void *buffer)
 
 // }}}
 //----------------------------------------------------------
+
+void set_close_on_exec(int fd)
+{
+  int flags = fcntl(fd, F_GETFD);
+  fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
 
 //----------------------------------------------------------------------------
 // vim:ft=c:foldmethod=marker
