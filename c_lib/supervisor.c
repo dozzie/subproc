@@ -1,6 +1,5 @@
 //----------------------------------------------------------------------------
 
-#include <stdio.h>
 #include <string.h>
 
 #include <unistd.h>
@@ -9,12 +8,17 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <errno.h>
+#include <poll.h>
 
 #include "supervisor.h"
 #include "proto_command.h"
+#include "proto_event.h"
 #include "int_pack.h"
 
 //----------------------------------------------------------------------------
+
+// milliseconds
+#define LOOP_INTERVAL 100
 
 void supervisor_loop(int fd_comm, int fd_events);
 
@@ -259,92 +263,258 @@ void recvdiscard(int fd, size_t size)
 
 // }}}
 //----------------------------------------------------------------------------
+// child process list {{{
+
+#define MAX_CHILDREN (16 * 1024)
+
+typedef struct {
+  uint64_t id;
+  pid_t pid;
+  int termsig;
+  uint8_t pgroup;
+} child_t;
+
+struct children_t {
+  uint64_t last_id;
+  child_t *last_child;
+  child_t children[MAX_CHILDREN];
+};
+
+// returns record for a new child process, NULL on no free space
+child_t* child_add(struct children_t *children)
+{
+  if (children->last_child == NULL)
+    // take first
+    children->last_child = children->children;
+  else if ((children->last_child - children->children) + 1 == MAX_CHILDREN)
+    // container is full
+    return NULL;
+  else
+    // take next
+    ++children->last_child;
+
+  children->last_child->id = ++children->last_id;
+
+  return children->last_child;
+}
+
+// returns child's position, NULL on not found
+child_t* child_find_id(struct children_t *children, uint64_t id)
+{
+  if (children->last_child == NULL)
+    return NULL;
+
+  child_t *child;
+  for (child = children->children; child <= children->last_child; ++child)
+    if (child->id == id)
+      return child;
+
+  return NULL;
+}
+
+// returns child's position, NULL on not found
+child_t* child_find_pid(struct children_t *children, pid_t pid)
+{
+  if (children->last_child == NULL)
+    return NULL;
+
+  child_t *child;
+  for (child = children->children; child <= children->last_child; ++child)
+    if (child->pid == pid)
+      return child;
+
+  return NULL;
+}
+
+void child_remove(struct children_t *children, child_t *child)
+{
+  if (children->last_child == NULL)
+    // should never happen, but who knows?
+    return;
+
+  if (child == children->last_child) {
+    memset(child, 0, sizeof(child_t));
+  } else {
+    memcpy(child, children->last_child, sizeof(child_t));
+    memset(children->last_child, 0, sizeof(child_t));
+  }
+
+  if (children->last_child == children->children)
+    children->last_child = NULL;
+  else
+    --children->last_child;
+}
+
+// }}}
+//----------------------------------------------------------------------------
 // main loop
 
-void print_command(FILE *out, struct comm_t *comm);
+// `buffer' should be EVENT_MESSAGE_SIZE bytes large
+pid_t child_next_event(struct children_t *children, void *buffer);
+// `fds' should be big enough for up to two ints
+// `buffer' should be EVENT_MESSAGE_SIZE bytes large
+// returns number of created FDs, or 0 on failure
+int child_spawn(struct comm_t *cmd, child_t *child, void *buffer, int *fds);
 
 void supervisor_loop(int fd_comm, int fd_events)
 {
-  // TODO: replace this stub
+  size_t command_buffer_size = 16 * 1024 + sysconf(_SC_ARG_MAX);
+  unsigned char cmdbuf[command_buffer_size];
 
-  size_t buffer_size = 16 * 1024 + sysconf(_SC_ARG_MAX);
-  unsigned char buffer[buffer_size];
-  ssize_t read_size;
-  while ((read_size = supervisor_read_command(fd_comm, buffer, sizeof(buffer))) > 0) {
+  struct children_t children;
+  memset(&children, 0, sizeof(children));
+
+  struct pollfd pollcomm = {
+    .fd = fd_comm,
+    .events = POLLIN
+  };
+
+  while (1) {
+    int ready = poll(&pollcomm, 1, LOOP_INTERVAL);
+
+    char evbuf[EVENT_MESSAGE_SIZE];
+    while (child_next_event(&children, evbuf) > 0) {
+      // TODO: handle send errors
+      supervisor_send_event(fd_events, evbuf, sizeof(evbuf), NULL, 0);
+    }
+
+    if (ready <= 0)
+      continue;
+    // XXX: only one descriptor (fd_comm) could make this loop enter here
+
+    ssize_t r = supervisor_read_command(fd_comm, cmdbuf, sizeof(cmdbuf));
+    if (r <= 0)
+      // read error or EOF
+      break;
+
     struct comm_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    char reply[ACK_MESSAGE_SIZE];
     int error;
-    if ((error = parse_command(buffer, read_size, &cmd)) < 0) {
-      // NOTE: I assume here that read_size >= 4
-      fprintf(stderr, "<%d> bad request (error %d): %02x %02x %02x %02x\n",
-              getpid(), error, buffer[0], buffer[1], buffer[2], buffer[3]);
-    } else {
-      print_command(stdout, &cmd);
-      char reply[ACK_MESSAGE_SIZE];
-      if (cmd.type == comm_exec) {
-        if (strcmp(cmd.exec_opts.command, "fail") != 0)
-          build_ack(reply, 182038444);
+
+    if ((error = parse_command(cmdbuf, r, &cmd)) != 0) {
+      build_nack_req(reply, error);
+      send(fd_comm, reply, sizeof(reply), MSG_NOSIGNAL); // ignore send errors
+      continue;
+    }
+
+    if (cmd.type == comm_exec) {
+      child_t *child = child_add(&children);
+      // TODO: return NAK when `child == NULL'
+
+      // NOTE: send an ACK immediately
+      build_ack(reply, child->id);
+      send(fd_comm, reply, sizeof(reply), MSG_NOSIGNAL);
+
+      int fds[2];
+      int nfds = child_spawn(&cmd, child, evbuf, fds);
+      supervisor_send_event(fd_events, evbuf, sizeof(evbuf), fds, nfds);
+
+      if (nfds > 0) {
+        // on success, close descriptors in this process
+        while (nfds > 0)
+          close(fds[--nfds]);
+      } else {
+        // on failure, remove the child record from registry
+        child_remove(&children, child);
+      }
+
+      free_command(&cmd); // XXX: this is important here
+    } else if (cmd.type == comm_kill) {
+      child_t *child = child_find_id(&children, cmd.kill.id);
+
+      if (child == NULL) {
+        build_nack_req(reply, ERR_NX_CHILD);
+      } else if (cmd.kill.signal == 0 && child->termsig == 0) {
+        // do nothing, report success
+        build_ack(reply, 0);
+      } else {
+        int signal = (cmd.kill.signal != 0) ? cmd.kill.signal : child->termsig;
+
+        // TODO: make sure child->pid is not 0
+
+        if (child->pgroup)
+          error = killpg(child->pid, signal);
         else
-          build_nack_req(reply, ERR_BAD_OPTION);
-      } else if (cmd.type == comm_kill) {
-        if (cmd.kill.id != 182038444)
-          build_nack_req(reply, ERR_NX_CHILD);
-        else if (cmd.kill.signal == SIGTERM)
-          build_nack_os(reply, EPERM);
+          error = kill(child->pid, signal);
+
+        if (error != 0)
+          build_nack_os(reply, errno);
         else
           build_ack(reply, 0);
-      } else { // cmd.type == comm_shutdown
-        build_ack(reply, 0);
       }
-      free_command(&cmd);
-      // FIXME: we're ignoring send() errors here
+
+      // NOTE: we don't wait here for child to terminate (especially that it
+      // could have been a "reload config" signal)
+
       send(fd_comm, reply, sizeof(reply), MSG_NOSIGNAL);
+      free_command(&cmd);
+    } else { // cmd.type == comm_shutdown
+      build_ack(reply, 0);
+      send(fd_comm, reply, sizeof(reply), MSG_NOSIGNAL);
+      free_command(&cmd);
+      break;
     }
   }
 
-  fprintf(stderr, "<%d> EOF, child supervisor terminates\n", getpid());
+  // TODO: send term signals to all children and wait for them to terminate
 }
 
-void print_command(FILE *out, struct comm_t *comm)
+//----------------------------------------------------------
+// spawn a child process {{{
+
+int child_spawn(struct comm_t *cmd, child_t *child, void *buffer, int *fds)
 {
-  if (comm->type == comm_exec) {
-    fprintf(out, "## command: exec CMD=%s\n", comm->exec_opts.command);
+  // TODO: child->pid = fork();
+  // TODO: child->termsig = cmd.exec_opts.termsig;
+  // TODO: child->pgroup = cmd.exec_opts.use_pgroup;
 
-    if (comm->exec_opts.command == comm->exec_opts.argv[0])
-      fprintf(out, "### argv[0] the same as command\n");
-    else
-      fprintf(out, "### argv[0]: %s\n", comm->exec_opts.argv[0]);
-    if (comm->exec_opts.argv[1] == NULL) {
-      fprintf(out, "### args: []\n");
-    } else {
-      fprintf(out, "### args: [\"%s\"", comm->exec_opts.argv[1]);
-      char **arg;
-      for (arg = comm->exec_opts.argv + 2; *arg != NULL; ++arg)
-        fprintf(out, ", \"%s\"", *arg);
-      fprintf(out, "]\n");
-    }
-
-    if (comm->exec_opts.termsig)
-      fprintf(out, "## term signal: %d\n", comm->exec_opts.termsig);
-    else
-      fprintf(out, "## term signal: close FDs\n");
-
-    fprintf(out, "## STDIO: mode %d using %s\n", comm->exec_opts.stdio_mode,
-            (comm->exec_opts.stdio_socket ? "sockets" : "pipes"));
-    fprintf(out, "## STDERR %s\n",
-            (comm->exec_opts.stderr_to_stdout ? "redirected to STDOUT" : "goes to TTY"));
-
-    fprintf(out, "## CWD: %s\n", comm->exec_opts.cwd ? comm->exec_opts.cwd : "<no change>");
-    fprintf(out, "## UID: %d GID: %d NICE: %d pgroup: %s\n",
-            (comm->exec_opts.use_uid ? comm->exec_opts.uid : -1),
-            (comm->exec_opts.use_gid ? comm->exec_opts.gid : -1),
-            (comm->exec_opts.use_priority ? comm->exec_opts.priority : -0xffff),
-            (comm->exec_opts.use_pgroup ? "true" : "false"));
-  } else if (comm->type == comm_kill) {
-    fprintf(out, "## command: kill SIG=%d ID=%ld\n", comm->kill.signal, comm->kill.id);
-  } else if (comm->type == comm_shutdown) {
-    fprintf(out, "## command: shutdown\n");
-  }
+  struct event_t event = {
+    .type = event_spawn_error,
+    .id = child->id,
+    .error = { .stage = STAGE_EXEC, .error = ENOSYS }
+  };
+  build_event(buffer, &event);
+  return 0; // number of FDs returned, 0 in case of a failure
 }
+
+// }}}
+//----------------------------------------------------------
+// wait for child processes and reap them {{{
+
+pid_t child_next_event(struct children_t *children, void *buffer)
+{
+  int status;
+  pid_t pid;
+  child_t *term_child;
+
+  while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+    term_child = child_find_pid(children, pid);
+    if (term_child != NULL) {
+      struct event_t event;
+
+      if (WIFEXITED(status)) {
+        event.type = event_exit;
+        event.id = term_child->id;
+        event.exit_code = WEXITSTATUS(status);
+      } else { // WIFSIGNALED(status)
+        event.type = event_signal;
+        event.id = term_child->id;
+        event.signal = WTERMSIG(status);
+      }
+
+      build_event(buffer, &event);
+      child_remove(children, term_child);
+      return pid;
+    }
+  }
+
+  // no more children or an error occurred
+  return pid;
+}
+
+// }}}
+//----------------------------------------------------------
 
 //----------------------------------------------------------------------------
 // vim:ft=c:foldmethod=marker
