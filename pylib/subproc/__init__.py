@@ -36,6 +36,7 @@ class SubprocError(Exception):
 class SubprocReqError(SubprocError):
     ERR_UNDEFINED      = -128 # a situation that should never happen (development error)
     ERR_CHILD_SPACE    = -127 # no more space for registering children
+    ERR_REQ_TOO_BIG    = -126 # request was too big
     ERR_PARSE          =   -1 # general request parse error
     ERR_BAD_REQ_HEADER =   -2 # invalid request packet header
     ERR_BAD_SIGNAL     =   -3 # invalid signal number
@@ -47,6 +48,7 @@ class SubprocReqError(SubprocError):
     _ERROR_MESSAGES = {
         ERR_UNDEFINED:      "Development error (should never happen)",
         ERR_CHILD_SPACE:    "No more space for registering children",
+        ERR_REQ_TOO_BIG:    "Request too big",
         ERR_PARSE:          "Bad request format",
         ERR_BAD_REQ_HEADER: "Unrecognized request type",
         ERR_BAD_SIGNAL:     "Invalid signal number",

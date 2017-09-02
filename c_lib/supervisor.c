@@ -225,18 +225,24 @@ ssize_t recvall(int fd, void *buffer, size_t size, int flags);
 ssize_t supervisor_read_command(int fd, void *buffer, size_t size)
 {
   unsigned char sizebuf[4];
-  if (recvall(fd, &sizebuf, sizeof(sizebuf), 0) != sizeof(sizebuf))
-    // TODO: set `errno' on incomplete message (EBADMSG? ECONNRESET? EIO?)
+  int result = recvall(fd, &sizebuf, sizeof(sizebuf), 0);
+  if (result != sizeof(sizebuf)) {
+    if (result >= 0)
+      errno = EIO; // incomplete read means unexpected EOF
     return -1;
+  }
   size_t msgsize = unpack32(sizebuf);
   if (size < msgsize) {
     recvdiscard(fd, msgsize);
     errno = EMSGSIZE;
     return -1;
   }
-  if (recvall(fd, buffer, msgsize, 0) != msgsize)
-    // TODO: set `errno' on incomplete message (EBADMSG? ECONNRESET? EIO?)
+  result = recvall(fd, buffer, msgsize, 0);
+  if (result != msgsize) {
+    if (result >= 0)
+      errno = EIO; // incomplete read means unexpected EOF
     return -1;
+  }
   return msgsize;
 }
 
@@ -420,6 +426,12 @@ void supervisor_loop(int fd_comm, int fd_events)
     // XXX: only one descriptor (fd_comm) could make this loop enter here
 
     ssize_t r = supervisor_read_command(fd_comm, cmdbuf, sizeof(cmdbuf));
+    if (r < 0 && errno == EMSGSIZE) {
+      char reply[ACK_MESSAGE_SIZE];
+      build_nack_req(reply, ERR_REQ_TOO_BIG);
+      send(fd_comm, reply, sizeof(reply), MSG_NOSIGNAL); // ignore send errors
+      continue;
+    }
     if (r <= 0)
       // read error or EOF
       break;
