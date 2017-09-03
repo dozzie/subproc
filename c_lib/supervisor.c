@@ -398,6 +398,7 @@ pid_t child_next_event(struct children_t *children, void *buffer);
 // `buffer' should be EVENT_MESSAGE_SIZE bytes large
 // returns number of created FDs, or 0 on failure
 int child_spawn(struct comm_t *cmd, child_t *child, void *buffer, int *fds);
+int child_kill(child_t *child, int signal);
 
 void supervisor_loop(int fd_comm, int fd_events)
 {
@@ -480,23 +481,11 @@ void supervisor_loop(int fd_comm, int fd_events)
 
       if (child == NULL) {
         build_nack_req(reply, ERR_NX_CHILD);
-      } else if (cmd.kill.signal == 0 && child->termsig == 0) {
-        // do nothing, report success
-        build_ack(reply, 0);
       } else {
-        int signal = (cmd.kill.signal != 0) ? cmd.kill.signal : child->termsig;
-
-        // TODO: make sure child->pid is not 0
-
-        if (child->pgroup)
-          error = killpg(child->pid, signal);
-        else
-          error = kill(child->pid, signal);
-
-        if (error != 0)
-          build_nack_os(reply, errno);
-        else
+        if (child_kill(child, cmd.kill.signal) == 0)
           build_ack(reply, 0);
+        else
+          build_nack_os(reply, errno);
       }
 
       // NOTE: we don't wait here for child to terminate (especially that it
@@ -768,6 +757,27 @@ pid_t child_next_event(struct children_t *children, void *buffer)
 
   // no more children or an error occurred
   return pid;
+}
+
+// }}}
+//----------------------------------------------------------
+// send a signal to a child process {{{
+
+int child_kill(child_t *child, int signal)
+{
+  if (signal == 0)
+    signal = child->termsig;
+
+  if (signal == 0)
+    return 0;
+
+  if (child->pid <= 0)
+    return 0;
+
+  if (child->pgroup)
+    return killpg(child->pid, signal);
+  else
+    return kill(child->pid, signal);
 }
 
 // }}}
