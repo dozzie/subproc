@@ -14,12 +14,16 @@
 
 #define TAG_COMM_EXEC       0x01
 #define TAG_COMM_KILL       0x02
+#define TAG_COMM_SHUT_OPTS  0xfe
 #define TAG_COMM_SHUTDOWN   0xff
 
 #define FLAG_STDIO_MODE         0x03 // mode (bidir, in, out, in + out)
 #define FLAG_STDIO_SOCKET       0x04 // pipe or socket
 #define FLAG_STDERR_TO_STDOUT   0x08 // redirect STDERR to STDOUT
 #define FLAG_PGROUP             0x10 // spawn a command in its proc group
+
+#define FLAG_SHUTDOWN_KILL  0x01 // on shutdown timeout, send SIGKILL and wait
+                                 // another timeout
 
 // numeric option tags
 #define OPT_TERMSIG   0x74 // uint8_t
@@ -57,6 +61,13 @@ int parse_command(void *data, size_t size, struct comm_t *comm)
     if (comm->kill.signal > 32)
       return ERR_BAD_SIGNAL;
     comm->kill.id = unpack64(rdata + 2);
+    return 0;
+  }
+
+  if (rdata[0] == TAG_COMM_SHUT_OPTS && size == 2 + sizeof(uint32_t)) {
+    comm->type = comm_shutdown_opts;
+    comm->shutdown_opts.send_kill = rdata[1] & FLAG_SHUTDOWN_KILL;
+    comm->shutdown_opts.timeout = unpack32(rdata + 2);
     return 0;
   }
 

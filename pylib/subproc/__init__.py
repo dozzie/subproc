@@ -20,6 +20,7 @@ STDIO_IN_OUT = 3
 
 _TAG_CMD_EXEC = 0x01
 _TAG_CMD_KILL = 0x02
+_TAG_CMD_SHUT_OPTS = 0xfe
 _TAG_CMD_SHUTDOWN = 0xff
 
 _FLAG_STDIO_MODE       = 0x03 # see also STDIO_* constants
@@ -265,8 +266,11 @@ class Supervisor:
         # NOTE: ignore returned `id'
         self._command(struct.pack(">BBQ", _TAG_CMD_KILL, signal, id))
 
-    def shutdown(self):
-        # NOTE: ignore returned `id'
+    def shutdown(self, timeout = 0, kill = False):
+        # NOTE: ignore returned `id's
+        # `timeout' is milliseconds
+        flags = 0x01 if kill else 0x00
+        self._command(struct.pack(">BBI", _TAG_CMD_SHUT_OPTS, flags, timeout))
         self._command(struct.pack(">BB", _TAG_CMD_SHUTDOWN, 0x00))
 
     def _command(self, payload):

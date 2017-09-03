@@ -17,7 +17,7 @@
 #define ERR_NX_CHILD        -8  // no such child process
 
 struct comm_t {
-  enum { comm_exec, comm_kill, comm_shutdown } type;
+  enum { comm_exec, comm_kill, comm_shutdown_opts, comm_shutdown } type;
   union {
     struct {
       char *command;
@@ -48,6 +48,13 @@ struct comm_t {
       uint64_t id;
       unsigned int signal;
     } kill;
+    struct {
+      // time to wait for children to exit after sending them their signals on
+      // shutdown
+      uint32_t timeout;
+      // whether to send SIGKILL on shutdown timeout
+      uint8_t send_kill;
+    } shutdown_opts;
   };
 };
 

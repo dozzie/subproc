@@ -405,16 +405,20 @@ int child_kill(child_t *child, int signal);
 
 void supervisor_loop(int fd_comm, int fd_events)
 {
-  size_t command_buffer_size = 16 * 1024 + sysconf(_SC_ARG_MAX);
-  unsigned char cmdbuf[command_buffer_size];
-
-  struct children_t children;
-  memset(&children, 0, sizeof(children));
-
+  // administrative data
+  unsigned char cmdbuf[16 * 1024 + sysconf(_SC_ARG_MAX)];
   struct pollfd pollcomm = {
     .fd = fd_comm,
     .events = POLLIN
   };
+
+  // options
+  uint32_t shutdown_timeout = 0;
+  int shutdown_send_sigkill = 0;
+
+  // children registry
+  struct children_t children;
+  memset(&children, 0, sizeof(children));
 
   while (1) {
     int ready = poll(&pollcomm, 1, LOOP_INTERVAL);
@@ -496,6 +500,12 @@ void supervisor_loop(int fd_comm, int fd_events)
 
       send(fd_comm, reply, sizeof(reply), MSG_NOSIGNAL);
       free_command(&cmd);
+    } else if (cmd.type == comm_shutdown_opts) {
+      shutdown_timeout = cmd.shutdown_opts.timeout;
+      shutdown_send_sigkill = cmd.shutdown_opts.send_kill;
+      build_ack(reply, 0);
+      send(fd_comm, reply, sizeof(reply), MSG_NOSIGNAL);
+      free_command(&cmd);
     } else { // cmd.type == comm_shutdown
       build_ack(reply, 0);
       send(fd_comm, reply, sizeof(reply), MSG_NOSIGNAL);
@@ -518,7 +528,7 @@ void supervisor_loop(int fd_comm, int fd_events)
   for (c = children.children; c <= children.last_child; ++c)
     child_kill(c, 0);
 
-  // TODO: timeout on shutdown procedure
+  // TODO: use `shutdown_timeout' and `shutdown_send_sigkill'
 
   struct timespec reap_interval = {
     .tv_sec = 0,
