@@ -393,6 +393,42 @@ void child_remove(struct children_t *children, child_t *child)
 
 // }}}
 //----------------------------------------------------------------------------
+// millisecond sleep {{{
+
+struct millisleep_t {
+  uint32_t timeout;
+  int infinity;
+};
+
+uint32_t millisleep(struct millisleep_t *total, unsigned int chunk)
+{
+  if (!total->infinity && total->timeout < chunk)
+    chunk = total->timeout;
+
+  struct timespec to_sleep = {
+    .tv_sec = chunk / 1000,
+    .tv_nsec = (chunk % 1000) * 1000 * 1000
+  };
+  struct timespec not_slept;
+
+  if (total->infinity) {
+    nanosleep(&to_sleep, NULL);
+    return chunk;
+  }
+
+  if (total->timeout == 0)
+    return 0;
+
+  if (nanosleep(&to_sleep, &not_slept) == 0)
+    total->timeout -= chunk;
+  else
+    total->timeout -= chunk - not_slept.tv_sec * 1000 +
+                              not_slept.tv_nsec / (1000 * 1000);
+  return total->timeout;
+}
+
+// }}}
+//----------------------------------------------------------------------------
 // main loop
 
 // `buffer' should be EVENT_MESSAGE_SIZE bytes large
@@ -528,22 +564,40 @@ void supervisor_loop(int fd_comm, int fd_events)
   for (c = children.children; c <= children.last_child; ++c)
     child_kill(c, 0);
 
-  // TODO: use `shutdown_timeout' and `shutdown_send_sigkill'
-
-  struct timespec reap_interval = {
-    .tv_sec = 0,
-    .tv_nsec = SHUTDOWN_REAP_INTERVAL * 1000 * 1000
+  struct millisleep_t sleep = {
+    .timeout = shutdown_timeout,
+    .infinity = (shutdown_timeout == 0)
   };
-  while (children.last_child != NULL) {
-    nanosleep(&reap_interval, NULL);
 
+  while (children.last_child != NULL &&
+         millisleep(&sleep, SHUTDOWN_REAP_INTERVAL) > 0) {
     while (child_next_event(&children, evbuf) > 0) {
       // NOTE: ignore send errors
       supervisor_send_event(fd_events, evbuf, sizeof(evbuf), NULL, 0);
     }
   }
 
-  shutdown_event.shutdown.alive_children = 0;
+  if (shutdown_send_sigkill && children.last_child != NULL) {
+    // send SIGKILL to all the children that are still alive
+    for (c = children.children; c <= children.last_child; ++c)
+      child_kill(c, SIGKILL);
+
+    // reset the timeout and wait again (don't wait infinitely, because some
+    // child processes can be stuck in an uninterruptible sleep)
+    sleep.timeout = shutdown_timeout;
+    while (children.last_child != NULL &&
+           millisleep(&sleep, SHUTDOWN_REAP_INTERVAL) > 0) {
+      while (child_next_event(&children, evbuf) > 0) {
+        // NOTE: ignore send errors
+        supervisor_send_event(fd_events, evbuf, sizeof(evbuf), NULL, 0);
+      }
+    }
+  }
+
+  shutdown_event.shutdown.alive_children =
+    (children.last_child != NULL) ?
+    children.last_child - children.children + 1 :
+    0;
   build_event(evbuf, &shutdown_event);
   supervisor_send_event(fd_events, evbuf, sizeof(evbuf), NULL, 0);
 }
