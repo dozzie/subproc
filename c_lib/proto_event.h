@@ -22,7 +22,11 @@
 #define STAGE_EXEC           10
 
 struct event_t {
-  enum { event_spawn, event_spawn_error, event_exit, event_signal } type;
+  enum {
+    event_spawn, event_spawn_error,
+    event_exit, event_signal,
+    event_shutdown
+  } type;
   uint64_t id;
 
   union {
@@ -36,6 +40,9 @@ struct event_t {
     } error;
     int exit_code;
     int signal;
+    struct {
+      size_t alive_children;
+    } shutdown;
   };
 };
 
@@ -43,6 +50,7 @@ struct event_t {
 // <error:  0x65> <stage:8> <id:64> <errno:32>
 // <exit:   0x78> <zero:8>  <id:64> <code:32>
 // <signal: 0x6b> <zero:8>  <id:64> <signal:32>
+// <shutdown: 0x74> <zero:8+64> <nchildren:32>
 #define EVENT_MESSAGE_SIZE 14
 
 // buffer should be EVENT_MESSAGE_SIZE bytes large

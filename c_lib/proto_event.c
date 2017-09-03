@@ -32,6 +32,10 @@ int parse_event(void *buffer, struct event_t *event)
     //rbuf[1] == 0; not used
     event->id = unpack64(rbuf + 2);
     event->signal = unpack32(rbuf + 10); // TODO: check signal value
+  } else if (rbuf[0] == 0x74) {
+    event->type = event_shutdown;
+    event->id = 0;
+    event->shutdown.alive_children = unpack32(rbuf + 10);
   } else {
     return -1;
   }
@@ -63,6 +67,11 @@ void build_event(void *buffer, struct event_t *event)
     wbuf[1] = 0;
     store64(wbuf + 2, event->id);
     store32(wbuf + 10, event->signal);
+  } else if (event->type == event_shutdown) {
+    wbuf[0] = 0x74;
+    wbuf[1] = 0;
+    store64(wbuf + 2, 0);
+    store32(wbuf + 10, event->shutdown.alive_children);
   }
 }
 

@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <fcntl.h>
+#include <time.h>
 
 #include "supervisor.h"
 #include "proto_command.h"
@@ -20,6 +21,8 @@
 
 // milliseconds
 #define LOOP_INTERVAL 100
+// milliseconds
+#define SHUTDOWN_REAP_INTERVAL 10
 
 void supervisor_loop(int fd_comm, int fd_events);
 
@@ -501,7 +504,38 @@ void supervisor_loop(int fd_comm, int fd_events)
     }
   }
 
-  // TODO: send term signals to all children and wait for them to terminate
+  char evbuf[EVENT_MESSAGE_SIZE];
+  struct event_t shutdown_event = { .type = event_shutdown, .id = 0 };
+
+  if (children.last_child == NULL) {
+    shutdown_event.shutdown.alive_children = 0;
+    build_event(evbuf, &shutdown_event);
+    supervisor_send_event(fd_events, evbuf, sizeof(evbuf), NULL, 0);
+    return;
+  }
+
+  child_t *c;
+  for (c = children.children; c <= children.last_child; ++c)
+    child_kill(c, 0);
+
+  // TODO: timeout on shutdown procedure
+
+  struct timespec reap_interval = {
+    .tv_sec = 0,
+    .tv_nsec = SHUTDOWN_REAP_INTERVAL * 1000 * 1000
+  };
+  while (children.last_child != NULL) {
+    nanosleep(&reap_interval, NULL);
+
+    while (child_next_event(&children, evbuf) > 0) {
+      // NOTE: ignore send errors
+      supervisor_send_event(fd_events, evbuf, sizeof(evbuf), NULL, 0);
+    }
+  }
+
+  shutdown_event.shutdown.alive_children = 0;
+  build_event(evbuf, &shutdown_event);
+  supervisor_send_event(fd_events, evbuf, sizeof(evbuf), NULL, 0);
 }
 
 //----------------------------------------------------------

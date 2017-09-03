@@ -6,7 +6,7 @@ import os
 
 __all__ = [
     "Supervisor",
-    "Child", "SpawnError", "ChildExit", "ChildSignal",
+    "Child", "SpawnError", "ChildExit", "ChildSignal", "Shutdown",
     "SubprocError", "SubprocReqError", "SubprocOSError",
     "STDIO_BIDIRECTIONAL", "STDIO_IN", "STDIO_OUT", "STDIO_IN_OUT",
 ]
@@ -152,6 +152,13 @@ class ChildSignal:
     def __repr__(self):
         return "<ChildExit ID=%d kill(%d)>" % (self.id, self.signal)
 
+class Shutdown:
+    def __init__(self, alive_children):
+        self.alive_children = alive_children
+
+    def __repr__(self):
+        return "<Shutdown children_alive:%d>" % (self.alive_children,)
+
 # }}}
 #-----------------------------------------------------------------------------
 
@@ -198,6 +205,11 @@ class Supervisor:
             return ChildExit(cid = child_id, code = data)
         elif evtype == 0x6b: # <child killed>
             return ChildSignal(cid = child_id, signal = data)
+        elif evtype == 0x74: # <shutdown>
+            # NOTE: this is the only way with C module's current interface to
+            # close descriptors and reap the supervisor
+            self._sup = None
+            return Shutdown(alive_children = data)
         else:
             raise Exception("unrecognized event")
 
