@@ -1,0 +1,10 @@
+.*.swp
+*.beam
+*.plt
+subproc.d
+/.erlang.mk
+/ebin/*.app
+/doc/edoc-info
+/doc/*.png
+/doc/*.html
+/doc/*.css

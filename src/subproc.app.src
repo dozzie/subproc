@@ -1,0 +1,9 @@
+{application, subproc, [
+  {description, ""},
+  {vsn, "0.0.0"},
+  {registered, []},
+  {applications, [kernel, stdlib]},
+  {modules, []},
+  %{mod, {subproc_app, []}},
+  {env, []}
+]}.
