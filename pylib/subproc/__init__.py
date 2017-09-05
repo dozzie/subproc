@@ -27,6 +27,7 @@ _FLAG_STDIO_MODE       = 0x03 # see also STDIO_* constants
 _FLAG_STDIO_SOCKET     = 0x04
 _FLAG_STDERR_TO_STDOUT = 0x08
 _FLAG_PGROUP           = 0x10
+_FLAG_TERM_PGROUP      = 0x20
 
 #-----------------------------------------------------------------------------
 # exceptions {{{
@@ -216,7 +217,7 @@ class Supervisor:
 
     def run(self, command, args, env = None, termsig = 0,
             stdio_mode = STDIO_BIDIRECTIONAL, stderr_to_stdout = False,
-            socket = False, pgroup = False,
+            socket = False, pgroup = False, term_pgroup = False,
             uid = None, gid = None, nice = None,
             cwd = None, argv0 = None):
         flags = stdio_mode & _FLAG_STDIO_MODE
@@ -226,6 +227,8 @@ class Supervisor:
             flags |= _FLAG_STDERR_TO_STDOUT
         if pgroup:
             flags |= _FLAG_PGROUP
+        if term_pgroup:
+            flags |= _FLAG_TERM_PGROUP
         request = bytearray()
         # header + flags
         request.extend(struct.pack(">BB", _TAG_CMD_EXEC, flags))

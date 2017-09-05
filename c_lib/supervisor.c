@@ -318,6 +318,7 @@ typedef struct {
   pid_t pid;
   int termsig;
   uint8_t pgroup;
+  uint8_t term_killpg; // send `termsig' signal on leader's termination
 } child_t;
 
 struct children_t {
@@ -733,6 +734,7 @@ int child_spawn(struct comm_t *cmd, child_t *child, void *buffer, int *fds)
     child->pid = pid;
     child->termsig = cmd->exec_opts.termsig;
     child->pgroup = cmd->exec_opts.use_pgroup;
+    child->term_killpg = cmd->exec_opts.term_pgroup;
 
     event.type = event_spawn;
     event.id = child->id;
@@ -835,6 +837,10 @@ pid_t child_next_event(struct children_t *children, void *buffer)
   while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
     term_child = child_find_pid(children, pid);
     if (term_child != NULL) {
+      if (term_child->pgroup && term_child->term_killpg &&
+          term_child->termsig != 0)
+        killpg(pid, term_child->termsig);
+
       struct event_t event;
 
       if (WIFEXITED(status)) {

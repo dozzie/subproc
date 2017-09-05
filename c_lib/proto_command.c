@@ -21,6 +21,7 @@
 #define FLAG_STDIO_SOCKET       0x04 // pipe or socket
 #define FLAG_STDERR_TO_STDOUT   0x08 // redirect STDERR to STDOUT
 #define FLAG_PGROUP             0x10 // spawn a command in its proc group
+#define FLAG_TERM_PGROUP        0x20 // on leader termination, kill proc group
 
 #define FLAG_SHUTDOWN_KILL  0x01 // on shutdown timeout, send SIGKILL and wait
                                  // another timeout
@@ -208,6 +209,7 @@ int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
   comm->exec_opts.stdio_socket     = ((data[1] & FLAG_STDIO_SOCKET) != 0);
   comm->exec_opts.stderr_to_stdout = ((data[1] & FLAG_STDERR_TO_STDOUT) != 0);
   comm->exec_opts.use_pgroup       = ((data[1] & FLAG_PGROUP) != 0);
+  comm->exec_opts.term_pgroup      = ((data[1] & FLAG_TERM_PGROUP) != 0);
 
   if (comm->exec_opts.stdio_mode == bidirectional &&
       !comm->exec_opts.stdio_socket)

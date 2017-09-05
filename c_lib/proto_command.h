@@ -35,6 +35,7 @@ struct comm_t {
       uint8_t stdio_socket;
       uint8_t stderr_to_stdout;
       uint8_t use_pgroup;
+      uint8_t term_pgroup; // if group leader terminates, send termsig to whole group
       uint8_t use_uid;
       uint8_t use_gid;
       uint8_t use_priority;
