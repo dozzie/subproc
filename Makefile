@@ -31,6 +31,15 @@ endif
 include erlang.mk
 include erlang.install.mk
 
+# NOTE: appending an empty string is a way make a no-op assignment, as
+# target-specific export needs an assignment
+app-c_src: export CC +=
+app-c_src: export CFLAGS +=
+app-c_src: export CPPFLAGS +=
+app-c_src: export LDFLAGS +=
+app-c_src: export LDLIBS +=
+app-c_src: export OUTDIR = $(CURDIR)/priv
+
 #-----------------------------------------------------------------------------
 
 .PHONY: dialyzer

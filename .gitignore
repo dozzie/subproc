@@ -8,3 +8,6 @@ subproc.d
 /doc/*.png
 /doc/*.html
 /doc/*.css
+/priv/*.so
+/c_src/env.mk
+/c_src/*.o
