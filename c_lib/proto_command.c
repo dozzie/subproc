@@ -149,8 +149,22 @@ char* parse_string(unsigned char *data, size_t size, size_t *read_at)
 
   size_t read_size = unpack16(data + *read_at);
 
+  if (size - (*read_at + 2) < read_size)
+    return NULL;
+
+  char *result = strndup((char *)(data + *read_at + 2), read_size);
+  *read_at += read_size + 2;
+  return result;
+}
+
+char* parse_nonempty_string(unsigned char *data, size_t size, size_t *read_at)
+{
+  if (size - *read_at < 2)
+    return NULL;
+
+  size_t read_size = unpack16(data + *read_at);
+
   if (read_size == 0)
-    // FIXME: this can be a valid value in some cases
     return NULL;
 
   if (size - (*read_at + 2) < read_size)
@@ -217,7 +231,7 @@ int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
     return ERR_BAD_STDIO;
 
   size_t read_at = 2;
-  if ((comm->exec_opts.command = parse_string(data, size, &read_at)) == NULL)
+  if ((comm->exec_opts.command = parse_nonempty_string(data, size, &read_at)) == NULL)
     return ERR_PARSE;
 
   if (size - read_at < 2)
@@ -274,7 +288,7 @@ int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
 
       // string options
       case OPT_USER:
-        if ((ugname = parse_string(data, size, &read_at)) == NULL)
+        if ((ugname = parse_nonempty_string(data, size, &read_at)) == NULL)
           return ERR_PARSE;
         if (get_user_uid(ugname, &comm->exec_opts.uid) < 0) {
           free(ugname);
@@ -284,7 +298,7 @@ int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
         free(ugname);
       break;
       case OPT_GROUP:
-        if ((ugname = parse_string(data, size, &read_at)) == NULL)
+        if ((ugname = parse_nonempty_string(data, size, &read_at)) == NULL)
           return ERR_PARSE;
         if (get_group_gid(ugname, &comm->exec_opts.gid) < 0) {
           free(ugname);
@@ -296,12 +310,12 @@ int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
       case OPT_CWD:
         if (comm->exec_opts.cwd != NULL)
           free(comm->exec_opts.cwd);
-        comm->exec_opts.cwd = parse_string(data, size, &read_at);
+        comm->exec_opts.cwd = parse_nonempty_string(data, size, &read_at);
         if (comm->exec_opts.cwd == NULL)
           return ERR_PARSE;
       break;
       case OPT_ARGV0:
-        argv0 = parse_string(data, size, &read_at);
+        argv0 = parse_nonempty_string(data, size, &read_at);
         if (argv0 == NULL)
           return ERR_PARSE;
         if (comm->exec_opts.argv[0] != comm->exec_opts.command)
