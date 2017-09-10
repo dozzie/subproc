@@ -37,10 +37,10 @@ clean:
 #-----------------------------------------------------------------------------
 # main compilation
 
-SOURCES = int_pack.c proto_command.c proto_event.c subproc_sup.c supervisor.c
-HEADERS = int_pack.h proto_command.h proto_event.h supervisor.h
+SOURCES = int_pack.c proto_command.c proto_event.c signal_names.c subproc_sup.c supervisor.c
+HEADERS = int_pack.h proto_command.h proto_event.h signal_names.h supervisor.h
 
-SUBPROC_SUP_OBJS = subproc_sup.o supervisor.o proto_command.o proto_event.o int_pack.o
+SUBPROC_SUP_OBJS = subproc_sup.o signal_names.o supervisor.o proto_command.o proto_event.o int_pack.o
 
 $(OUTDIR)/subproc_sup_drv.so: $(SUBPROC_SUP_OBJS)
 	$(link_verbose) $(CC) -fPIC -shared $(LDFLAGS) -o $@ $^ $(LDLIBS)

@@ -4,6 +4,9 @@
 //----------------------------------------------------------
 // unix OS {{{
 
+#include <ctype.h>
+#include <string.h>
+
 #include <stdint.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -17,6 +20,8 @@
 
 #include "supervisor.h"
 #include "proto_event.h" // EVENT_MESSAGE_SIZE
+#include "signal_names.h"
+#include "int_pack.h"
 
 // }}}
 //----------------------------------------------------------
@@ -156,11 +161,87 @@ void driver_stop_select(ErlDrvEvent event, void *reserved)
 //----------------------------------------------------------
 // Erlang port control {{{
 
+static
+ErlDrvSSizeT translate_signal_to_number(struct subproc_sup_context *context,
+                                        char *buf, ErlDrvSizeT len,
+                                        char **rbuf, ErlDrvSizeT rlen)
+{
+  char name[32] = "SIG";
+  if (len >= sizeof(name) - 3)
+    return 0;
+
+  size_t i;
+  for (i = 0; i < len; ++i)
+    name[i + 3] = toupper(buf[i]);
+  name[len + 3] = 0;
+
+  int signum = find_signal_number(name);
+  if (signum == 0)
+    return 0;
+
+  *rbuf[0] = (uint8_t)signum;
+  return 1;
+}
+
+static
+ErlDrvSSizeT translate_signal_to_name(struct subproc_sup_context *context,
+                                      char *buf, ErlDrvSizeT len,
+                                      char **rbuf, ErlDrvSizeT rlen)
+{
+  if (len < 1)
+    return 0;
+
+  // `MAX_SIGNAL_NAME' is just a few bytes, so this should never be called
+  if (MAX_SIGNAL_NAME > rlen)
+    *rbuf = driver_alloc(MAX_SIGNAL_NAME);
+
+  const char *name = find_signal_name(buf[0]);
+  if (name == NULL)
+    return 0;
+
+  name += 3; // skip "SIG" prefix
+  size_t i;
+  for (i = 0; name[i] != 0; ++i)
+    (*rbuf)[i] = tolower(name[i]);
+
+  return i;
+}
+
+static
+ErlDrvSSizeT translate_errno_to_name(struct subproc_sup_context *context,
+                                     char *buf, ErlDrvSizeT len,
+                                     char **rbuf, ErlDrvSizeT rlen)
+{
+  if (len != 4)
+    return 0;
+
+  char *errstr = erl_errno_id(unpack32((unsigned char*)buf));
+  size_t errlen = strlen(errstr);
+
+  // `errlen' should be just a few bytes, so this should never be called
+  if (errlen > rlen)
+    *rbuf = driver_alloc(errlen);
+
+  memcpy(*rbuf, errstr, errlen);
+
+  return errlen;
+}
+
 ErlDrvSSizeT driver_control(ErlDrvData drv_data, unsigned int command,
                             char *buf, ErlDrvSizeT len,
                             char **rbuf, ErlDrvSizeT rlen)
 {
   struct subproc_sup_context *context = (struct subproc_sup_context *)drv_data;
+
+  if (command == 1) {
+    return translate_signal_to_number(context, buf, len, rbuf, rlen);
+  } else if (command == 2) {
+    return translate_signal_to_name(context, buf, len, rbuf, rlen);
+  } else if (command == 3) {
+    return translate_errno_to_name(context, buf, len, rbuf, rlen);
+  } else if (command != 0) {
+    return -1;
+  }
 
   // we know in advance how much space there will be needed; note that this
   // should never be executed, as ACK_MESSAGE_SIZE is just 10 bytes
