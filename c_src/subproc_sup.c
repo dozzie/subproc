@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <errno.h>
 #include <limits.h>
@@ -14,7 +15,8 @@
 //----------------------------------------------------------
 // local includes {{{
 
-//#include "supervisor.h"
+#include "supervisor.h"
+#include "proto_event.h" // EVENT_MESSAGE_SIZE
 
 // }}}
 //----------------------------------------------------------
@@ -39,9 +41,13 @@
 // Erlang port driver API {{{
 
 struct subproc_sup_context {
-  //struct sup_h sup;
+  struct sup_h sup;
   ErlDrvPort erl_port;
 };
+
+// let's hope that the child process' FD number won't land higher than 4095
+// FIXME: put a mutex here
+static pid_t subproc_sup_fd_pids[4096];
 
 //----------------------------------------------------------
 // entry point definition {{{
@@ -97,10 +103,19 @@ ErlDrvData driver_start(ErlDrvPort port, char *cmd)
 
   context->erl_port = port;
 
-  //if (/* error */) {
-  //  driver_free(context);
-  //  return ERL_DRV_ERROR_ERRNO;
-  //}
+  // port_control() should return binaries
+  set_port_control_flags(port, PORT_CONTROL_FLAG_BINARY);
+
+  if (supervisor_spawn(&context->sup) < 0) {
+    driver_free(context);
+    return ERL_DRV_ERROR_ERRNO;
+  }
+
+  // TODO: check if `context->sup.events' fits in subproc_sup_fd_pids array
+  subproc_sup_fd_pids[context->sup.events] = context->sup.pid;
+
+  ErlDrvEvent event = (ErlDrvEvent)((long int)context->sup.events);
+  driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 1);
 
   return (ErlDrvData)context;
 }
@@ -113,11 +128,11 @@ void driver_stop(ErlDrvData drv_data)
 {
   struct subproc_sup_context *context = (struct subproc_sup_context *)drv_data;
 
-  // TODO: deselect events FD
-  //ErlDrvEvent event = (ErlDrvEvent)((long int)context->eventfd);
-  //driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 0);
+  ErlDrvEvent event = (ErlDrvEvent)((long int)context->sup.events);
+  driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 0);
 
-  // TODO: close commands FD
+  // `context->sup.events' will be closed in driver_stop_select() handler
+  close(context->sup.comm);
 
   driver_free(context);
 }
@@ -129,8 +144,12 @@ void driver_stop(ErlDrvData drv_data)
 void driver_stop_select(ErlDrvEvent event, void *reserved)
 {
   long int fd = (long int)event;
+  pid_t pid = subproc_sup_fd_pids[fd];
+  subproc_sup_fd_pids[fd] = 0;
+
   close(fd);
-  // TODO: reap subprocess supervisor process somehow
+  if (pid != 0)
+    waitpid(pid, NULL, 0);
 }
 
 // }}}
@@ -141,8 +160,20 @@ ErlDrvSSizeT driver_control(ErlDrvData drv_data, unsigned int command,
                             char *buf, ErlDrvSizeT len,
                             char **rbuf, ErlDrvSizeT rlen)
 {
-  // TODO: implement me
-  return 0;
+  struct subproc_sup_context *context = (struct subproc_sup_context *)drv_data;
+
+  // we know in advance how much space there will be needed; note that this
+  // should never be executed, as ACK_MESSAGE_SIZE is just 10 bytes
+  if (ACK_MESSAGE_SIZE > rlen)
+    *rbuf = driver_alloc(ACK_MESSAGE_SIZE);
+
+  int result = supervisor_send_command(&context->sup, buf, len, *rbuf);
+  if (result < 0)
+    driver_failure_posix(context->erl_port, errno);
+
+  // TODO: convert `errno' in <<0x02 0x02 Errno:32 _Zero>> with erl_errno_id()
+
+  return result;
 }
 
 // }}}
@@ -154,19 +185,65 @@ void driver_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
   struct subproc_sup_context *context = (struct subproc_sup_context *)drv_data;
   // `event' is events descriptor
 
+  // XXX: event protocol guarantees that an event message is of fixed size and
+  // carries at most two file descriptors
+  char buffer[EVENT_MESSAGE_SIZE];
+  size_t bufsize = EVENT_MESSAGE_SIZE;
+  int fds[2];
+  size_t fdnum = 2;
+
+  int result = supervisor_read_event(&context->sup, buffer, &bufsize,
+                                     fds, &fdnum);
+  if (result == 0) {
+    // nothing to read (should never happen, since we have a "ready to read"
+    // event)
+    return;
+  }
+
+  if (result < 0) {
+    driver_failure_posix(context->erl_port, errno);
+    return;
+  }
+
+  if (bufsize == 0) { // EOF
+    driver_failure_eof(context->erl_port);
+    return;
+  }
+
   ErlDrvPort port = context->erl_port;
   ErlDrvTermData owner = driver_connected(port);
 
-  ErlDrvTermData data[] = { // send `{subproc_sup, Port, Data}'
+  size_t data_size = 7; // this many positions in `data' are filled initially
+  ErlDrvTermData data[] = { // send `{subproc_sup, Port, Data, [FDs]}'
+    // data[0,1,2,3]
     ERL_DRV_ATOM, driver_mk_atom("subproc_sup"),
     ERL_DRV_PORT, driver_mk_port(port),
-    //ERL_DRV_BUF2BINARY, (ErlDrvTermData)buffer, read_len,
-    ERL_DRV_BUF2BINARY, (ErlDrvTermData)(""), 1,
-    ERL_DRV_TUPLE, 3
+    // data[4,5,6]
+    ERL_DRV_BUF2BINARY, (ErlDrvTermData)buffer, bufsize,
+    // space to be filled later
+    ERL_DRV_NIL, ERL_DRV_NIL, // ERL_DRV_INT, fds[0]
+    ERL_DRV_NIL, ERL_DRV_NIL, // ERL_DRV_INT, fds[1]
+    ERL_DRV_NIL, ERL_DRV_NIL, ERL_DRV_NIL, // list construction
+    ERL_DRV_NIL, ERL_DRV_NIL  // tuple construction
   };
 
-  // FIXME: this will be removed in OTP R17, use erl_drv_send_term()
-  driver_send_term(port, owner, data, sizeof(data) / sizeof(data[0]));
+  // build a (possibly empty) proper list of integers (FDs)
+  size_t i;
+  for (i = 0; i < fdnum; ++i) {
+    data[data_size++] = ERL_DRV_INT;
+    data[data_size++] = fds[i];
+  }
+  data[data_size++] = ERL_DRV_NIL;
+  data[data_size++] = ERL_DRV_LIST;
+  data[data_size++] = 1 + fdnum; // one more for NIL (`[]')
+
+  // now make it a tuple: `{subproc_sup, port(), binary(), [integer()]}'
+  data[data_size++] = ERL_DRV_TUPLE;
+  data[data_size++] = 4;
+
+  // FIXME: driver_send_term() will be removed in OTP R17, use
+  // erl_drv_send_term()
+  driver_send_term(port, owner, data, data_size);
 }
 
 // }}}

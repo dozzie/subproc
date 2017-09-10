@@ -10,4 +10,5 @@ subproc.d
 /doc/*.css
 /priv/*.so
 /c_src/env.mk
+/c_src/deps.mk
 /c_src/*.o
