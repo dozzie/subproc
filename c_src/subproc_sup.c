@@ -168,7 +168,7 @@ ErlDrvSSizeT translate_signal_to_number(struct subproc_sup_context *context,
 {
   char name[32] = "SIG";
   if (len >= sizeof(name) - 3)
-    return 0;
+    return -1;
 
   size_t i;
   for (i = 0; i < len; ++i)
@@ -177,7 +177,7 @@ ErlDrvSSizeT translate_signal_to_number(struct subproc_sup_context *context,
 
   int signum = find_signal_number(name);
   if (signum == 0)
-    return 0;
+    return -1;
 
   *rbuf[0] = (uint8_t)signum;
   return 1;
@@ -188,8 +188,8 @@ ErlDrvSSizeT translate_signal_to_name(struct subproc_sup_context *context,
                                       char *buf, ErlDrvSizeT len,
                                       char **rbuf, ErlDrvSizeT rlen)
 {
-  if (len < 1)
-    return 0;
+  if (len != 1)
+    return -1;
 
   // `MAX_SIGNAL_NAME' is just a few bytes, so this should never be called
   if (MAX_SIGNAL_NAME > rlen)
@@ -197,7 +197,7 @@ ErlDrvSSizeT translate_signal_to_name(struct subproc_sup_context *context,
 
   const char *name = find_signal_name(buf[0]);
   if (name == NULL)
-    return 0;
+    return -1;
 
   name += 3; // skip "SIG" prefix
   size_t i;
@@ -213,7 +213,7 @@ ErlDrvSSizeT translate_errno_to_name(struct subproc_sup_context *context,
                                      char **rbuf, ErlDrvSizeT rlen)
 {
   if (len != 4)
-    return 0;
+    return -1;
 
   char *errstr = erl_errno_id(unpack32((unsigned char*)buf));
   size_t errlen = strlen(errstr);
@@ -251,8 +251,6 @@ ErlDrvSSizeT driver_control(ErlDrvData drv_data, unsigned int command,
   int result = supervisor_send_command(&context->sup, buf, len, *rbuf);
   if (result < 0)
     driver_failure_posix(context->erl_port, errno);
-
-  // TODO: convert `errno' in <<0x02 0x02 Errno:32 _Zero>> with erl_errno_id()
 
   return result;
 }
