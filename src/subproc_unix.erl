@@ -57,13 +57,13 @@ init() ->
   | {error, badarg | posix()}.
 
 waitpid(_Pid) ->
-  "NIF library not loaded".
+  erlang:nif_error(nif_not_loaded).
 
 -spec close(os_fd()) ->
   ok | {error, badarg | posix()}.
 
 close(_FD) ->
-  "NIF library not loaded".
+  erlang:nif_error(nif_not_loaded).
 
 %%%---------------------------------------------------------------------------
 %%% translation functions
@@ -73,19 +73,19 @@ close(_FD) ->
   posix() | unknown.
 
 errno_to_posix(_Errno) ->
-  "NIF library not loaded".
+  erlang:nif_error(nif_not_loaded).
 
 -spec signal_name(signal_number()) ->
   signal_name().
 
 signal_name(_SigNum) ->
-  "NIF library not loaded".
+  erlang:nif_error(nif_not_loaded).
 
 -spec signal_number(signal_name()) ->
   signal_number().
 
 signal_number(_SigName) ->
-  "NIF library not loaded".
+  erlang:nif_error(nif_not_loaded).
 
 %%%---------------------------------------------------------------------------
 %%% vim:ft=erlang:foldmethod=marker
