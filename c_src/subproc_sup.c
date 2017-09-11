@@ -133,11 +133,11 @@ void driver_stop(ErlDrvData drv_data)
 {
   struct subproc_sup_context *context = (struct subproc_sup_context *)drv_data;
 
-  ErlDrvEvent event = (ErlDrvEvent)((long int)context->sup.events);
-  driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 0);
-
   // `context->sup.events' will be closed in driver_stop_select() handler
   close(context->sup.comm);
+
+  ErlDrvEvent event = (ErlDrvEvent)((long int)context->sup.events);
+  driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 0);
 
   driver_free(context);
 }
