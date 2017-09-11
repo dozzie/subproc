@@ -47,7 +47,8 @@ endif
 
 .PHONY: dialyzer
 YECC_ERL_FILES = $(subst .yrl,.erl,$(subst .xrl,.erl,$(wildcard src/*.[xy]rl)))
-ERL_SOURCE_FILES = $(filter-out $(YECC_ERL_FILES),$(wildcard src/*.erl))
+NIF_STUB_FILES = src/subproc_unix.erl
+ERL_SOURCE_FILES = $(filter-out $(YECC_ERL_FILES) $(NIF_STUB_FILES),$(wildcard src/*.erl))
 dialyzer:
 	@echo "dialyzer $(strip $(DIALYZER_OPTS)) --src src/*.erl"
 	@dialyzer $(strip $(DIALYZER_OPTS)) --src $(ERL_SOURCE_FILES)

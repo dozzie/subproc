@@ -8,8 +8,6 @@
 #include <string.h>
 
 #include <stdint.h>
-#include <sys/types.h>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <errno.h>
 #include <limits.h>
@@ -20,7 +18,6 @@
 
 #include "supervisor.h"
 #include "proto_event.h" // EVENT_MESSAGE_SIZE
-#include "signal_names.h"
 #include "int_pack.h"
 
 // }}}
@@ -49,10 +46,6 @@ struct subproc_sup_context {
   struct sup_h sup;
   ErlDrvPort erl_port;
 };
-
-// let's hope that the child process' FD number won't land higher than 4095
-// FIXME: put a mutex here
-static pid_t subproc_sup_fd_pids[4096];
 
 //----------------------------------------------------------
 // entry point definition {{{
@@ -116,9 +109,6 @@ ErlDrvData driver_start(ErlDrvPort port, char *cmd)
     return ERL_DRV_ERROR_ERRNO;
   }
 
-  // TODO: check if `context->sup.events' fits in subproc_sup_fd_pids array
-  subproc_sup_fd_pids[context->sup.events] = context->sup.pid;
-
   ErlDrvEvent event = (ErlDrvEvent)((long int)context->sup.events);
   driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 1);
 
@@ -149,83 +139,12 @@ void driver_stop(ErlDrvData drv_data)
 void driver_stop_select(ErlDrvEvent event, void *reserved)
 {
   long int fd = (long int)event;
-  pid_t pid = subproc_sup_fd_pids[fd];
-  subproc_sup_fd_pids[fd] = 0;
-
   close(fd);
-  if (pid != 0)
-    waitpid(pid, NULL, 0);
 }
 
 // }}}
 //----------------------------------------------------------
 // Erlang port control {{{
-
-static
-ErlDrvSSizeT translate_signal_to_number(struct subproc_sup_context *context,
-                                        char *buf, ErlDrvSizeT len,
-                                        char **rbuf, ErlDrvSizeT rlen)
-{
-  char name[32] = "SIG";
-  if (len >= sizeof(name) - 3)
-    return -1;
-
-  size_t i;
-  for (i = 0; i < len; ++i)
-    name[i + 3] = toupper(buf[i]);
-  name[len + 3] = 0;
-
-  int signum = find_signal_number(name);
-  if (signum == 0)
-    return -1;
-
-  *rbuf[0] = (uint8_t)signum;
-  return 1;
-}
-
-static
-ErlDrvSSizeT translate_signal_to_name(struct subproc_sup_context *context,
-                                      char *buf, ErlDrvSizeT len,
-                                      char **rbuf, ErlDrvSizeT rlen)
-{
-  if (len != 1)
-    return -1;
-
-  // `MAX_SIGNAL_NAME' is just a few bytes, so this should never be called
-  if (MAX_SIGNAL_NAME > rlen)
-    *rbuf = driver_alloc(MAX_SIGNAL_NAME);
-
-  const char *name = find_signal_name(buf[0]);
-  if (name == NULL)
-    return -1;
-
-  name += 3; // skip "SIG" prefix
-  size_t i;
-  for (i = 0; name[i] != 0; ++i)
-    (*rbuf)[i] = tolower(name[i]);
-
-  return i;
-}
-
-static
-ErlDrvSSizeT translate_errno_to_name(struct subproc_sup_context *context,
-                                     char *buf, ErlDrvSizeT len,
-                                     char **rbuf, ErlDrvSizeT rlen)
-{
-  if (len != 4)
-    return -1;
-
-  char *errstr = erl_errno_id(unpack32((unsigned char*)buf));
-  size_t errlen = strlen(errstr);
-
-  // `errlen' should be just a few bytes, so this should never be called
-  if (errlen > rlen)
-    *rbuf = driver_alloc(errlen);
-
-  memcpy(*rbuf, errstr, errlen);
-
-  return errlen;
-}
 
 ErlDrvSSizeT driver_control(ErlDrvData drv_data, unsigned int command,
                             char *buf, ErlDrvSizeT len,
@@ -234,11 +153,9 @@ ErlDrvSSizeT driver_control(ErlDrvData drv_data, unsigned int command,
   struct subproc_sup_context *context = (struct subproc_sup_context *)drv_data;
 
   if (command == 1) {
-    return translate_signal_to_number(context, buf, len, rbuf, rlen);
-  } else if (command == 2) {
-    return translate_signal_to_name(context, buf, len, rbuf, rlen);
-  } else if (command == 3) {
-    return translate_errno_to_name(context, buf, len, rbuf, rlen);
+    // assume that `*rbuf' is at least four bytes large
+    store32((unsigned char *)*rbuf, (uint32_t)context->sup.pid);
+    return 4;
   } else if (command != 0) {
     return -1;
   }

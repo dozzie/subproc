@@ -28,21 +28,29 @@ OUTDIR ?= ../priv
 
 .PHONY: all clean
 
-all: $(OUTDIR)/subproc_sup_drv.so
+all: $(OUTDIR)/subproc_sup_drv.so $(OUTDIR)/subproc_unix.so
 
 clean:
 	$(gen_verbose) rm -f *.o
 	$(gen_verbose) rm -f $(OUTDIR)/subproc_sup_drv.so
+	$(gen_verbose) rm -f $(OUTDIR)/subproc_unix.so
 
 #-----------------------------------------------------------------------------
 # main compilation
 
-SOURCES = int_pack.c proto_command.c proto_event.c signal_names.c subproc_sup.c supervisor.c
-HEADERS = int_pack.h proto_command.h proto_event.h signal_names.h supervisor.h
+SOURCES = int_pack.c proto_command.c proto_event.c signal_names.c \
+          subproc_sup.c supervisor.c \
+          subproc_unix.c
+HEADERS = int_pack.h proto_command.h proto_event.h signal_names.h \
+          supervisor.h
 
-SUBPROC_SUP_OBJS = subproc_sup.o signal_names.o supervisor.o proto_command.o proto_event.o int_pack.o
+SUBPROC_SUP_OBJS = subproc_sup.o supervisor.o proto_command.o proto_event.o int_pack.o
+SUBPROC_UNIX_OBJS = subproc_unix.o signal_names.o
 
 $(OUTDIR)/subproc_sup_drv.so: $(SUBPROC_SUP_OBJS)
+	$(link_verbose) $(CC) -fPIC -shared $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+$(OUTDIR)/subproc_unix.so: $(SUBPROC_UNIX_OBJS)
 	$(link_verbose) $(CC) -fPIC -shared $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 %.o: %.c
@@ -59,6 +67,7 @@ $(OUTDIR):
 	$(verbose) mkdir $@
 
 $(OUTDIR)/subproc_sup_drv.so: | $(OUTDIR)
+$(OUTDIR)/subproc_unix.so: | $(OUTDIR)
 
 #-----------------------------------------------------------------------------
 # vim:ft=make
