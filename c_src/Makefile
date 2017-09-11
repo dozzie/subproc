@@ -48,8 +48,8 @@ SOURCES = int_pack.c proto_command.c proto_event.c signal_names.c \
 HEADERS = int_pack.h proto_command.h proto_event.h signal_names.h \
           supervisor.h
 
-SUBPROC_EXE_OBJS = supervisor_exe.o supervisor.o proto_command.o proto_event.o int_pack.o
-SUBPROC_SUP_OBJS = subproc_sup.o supervisor.o proto_command.o proto_event.o int_pack.o
+SUBPROC_EXE_OBJS = supervisor_exe.o supervisor_loop.o proto_command.o proto_event.o int_pack.o
+SUBPROC_SUP_OBJS = subproc_sup.o supervisor.o int_pack.o
 SUBPROC_UNIX_OBJS = subproc_unix.o signal_names.o
 
 $(OUTDIR)/subproc_unix_supervisor: $(SUBPROC_EXE_OBJS)
