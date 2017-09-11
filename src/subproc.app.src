@@ -4,6 +4,9 @@
   {registered, []},
   {applications, [kernel, stdlib]},
   {modules, []},
-  %{mod, {subproc_app, []}},
-  {env, []}
+  {mod, {subproc_app, []}},
+  {env, [
+    {shutdown_timeout, infinity},
+    {shutdown_kill, false}
+  ]}
 ]}.
