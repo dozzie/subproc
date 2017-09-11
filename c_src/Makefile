@@ -25,13 +25,17 @@ link_verbose = $(link_verbose_$(V))
 # entry points for erlang.mk
 
 OUTDIR ?= ../priv
+TARGETS = $(OUTDIR)/subproc_unix_supervisor \
+          $(OUTDIR)/subproc_sup_drv.so \
+          $(OUTDIR)/subproc_unix.so
 
 .PHONY: all clean
 
-all: $(OUTDIR)/subproc_sup_drv.so $(OUTDIR)/subproc_unix.so
+all: $(TARGETS)
 
 clean:
 	$(gen_verbose) rm -f *.o
+	$(gen_verbose) rm -f $(OUTDIR)/subproc_unix_supervisor
 	$(gen_verbose) rm -f $(OUTDIR)/subproc_sup_drv.so
 	$(gen_verbose) rm -f $(OUTDIR)/subproc_unix.so
 
@@ -44,8 +48,12 @@ SOURCES = int_pack.c proto_command.c proto_event.c signal_names.c \
 HEADERS = int_pack.h proto_command.h proto_event.h signal_names.h \
           supervisor.h
 
+SUBPROC_EXE_OBJS = supervisor_exe.o supervisor.o proto_command.o proto_event.o int_pack.o
 SUBPROC_SUP_OBJS = subproc_sup.o supervisor.o proto_command.o proto_event.o int_pack.o
 SUBPROC_UNIX_OBJS = subproc_unix.o signal_names.o
+
+$(OUTDIR)/subproc_unix_supervisor: $(SUBPROC_EXE_OBJS)
+	$(link_verbose) $(CC) -fPIC $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(OUTDIR)/subproc_sup_drv.so: $(SUBPROC_SUP_OBJS)
 	$(link_verbose) $(CC) -fPIC -shared $(LDFLAGS) -o $@ $^ $(LDLIBS)
@@ -66,8 +74,7 @@ deps.mk: $(SOURCES) $(HEADERS)
 $(OUTDIR):
 	$(verbose) mkdir $@
 
-$(OUTDIR)/subproc_sup_drv.so: | $(OUTDIR)
-$(OUTDIR)/subproc_unix.so: | $(OUTDIR)
+$(TARGETS): | $(OUTDIR)
 
 #-----------------------------------------------------------------------------
 # vim:ft=make

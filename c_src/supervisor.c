@@ -1,6 +1,7 @@
 //----------------------------------------------------------------------------
 
 #include <string.h>
+#include <stdio.h> // snprintf()
 
 #include <unistd.h>
 #include <sys/types.h>
@@ -25,9 +26,6 @@
 #define SHUTDOWN_REAP_INTERVAL 10
 
 static
-void supervisor_loop(int fd_comm, int fd_events);
-
-static
 void set_close_on_exec(int fd);
 
 static
@@ -42,7 +40,7 @@ void recvdiscard(int fd, size_t size);
 //----------------------------------------------------------------------------
 // start and stop supervisor process {{{
 
-int supervisor_spawn(struct sup_h *sup)
+int supervisor_spawn(struct sup_h *sup, char *exe_path)
 {
   pid_t pid;
   int comm[2];
@@ -93,24 +91,27 @@ int supervisor_spawn(struct sup_h *sup)
     dup2(devnullw, 1);
     // STDERR stays as it was
 
-    // NOTE: these four should be closed by the loop that follows
-    //close(devnullr);
-    //close(devnullw);
-    //close(comm[1]);
-    //close(events[1]);
+    close(devnullr);
+    close(devnullw);
+    close(comm[1]);
+    close(events[1]);
 
-    int fd;
-    int maxfd = sysconf(_SC_OPEN_MAX);
-    for (fd = 3; fd < maxfd; ++fd)
-      if (fd != comm[0] && fd != events[0])
-        close(fd);
-
-    set_close_on_exec(comm[0]);
-    set_close_on_exec(events[0]);
-
+    // NOTE: comm[0] needs to stay bidirectional
     shutdown(events[0], SHUT_RD);
-    supervisor_loop(comm[0], events[0]);
-    _exit(0);
+
+    char fd_comm[32];
+    char fd_events[32];
+    snprintf(fd_comm, sizeof(fd_comm), "%d", comm[0]);
+    snprintf(fd_events, sizeof(fd_events), "%d", events[0]);
+
+    char *exe_name = strrchr(exe_path, '/');
+    if (exe_name != NULL)
+      ++exe_name;
+    else
+      exe_name = exe_path;
+
+    execl(exe_path, exe_name, fd_comm, fd_events, NULL);
+    _exit(255);
   }
 
   close(devnullr);
@@ -454,7 +455,6 @@ int child_spawn(struct comm_t *cmd, child_t *child, void *buffer, int *fds);
 static
 int child_kill(child_t *child, int signal);
 
-static
 void supervisor_loop(int fd_comm, int fd_events)
 {
   // administrative data
@@ -463,6 +463,9 @@ void supervisor_loop(int fd_comm, int fd_events)
     .fd = fd_comm,
     .events = POLLIN
   };
+
+  set_close_on_exec(fd_comm);
+  set_close_on_exec(fd_events);
 
   // options
   uint32_t shutdown_timeout = 0;

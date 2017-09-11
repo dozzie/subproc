@@ -9,6 +9,7 @@ subproc.d
 /doc/*.html
 /doc/*.css
 /priv/*.so
+/priv/subproc_unix_supervisor
 /c_src/env.mk
 /c_src/deps.mk
 /c_src/*.o

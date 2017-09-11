@@ -95,6 +95,11 @@ DRIVER_INIT(PORT_DRIVER_NAME_SYM)
 
 ErlDrvData driver_start(ErlDrvPort port, char *cmd)
 {
+  char *exe_path = strchr(cmd, ' ');
+  if (exe_path == NULL)
+    return ERL_DRV_ERROR_BADARG;
+  ++exe_path; // skip space
+
   struct subproc_sup_context *context =
     driver_alloc(sizeof(struct subproc_sup_context));
   memset(context, 0, sizeof(*context));
@@ -104,7 +109,7 @@ ErlDrvData driver_start(ErlDrvPort port, char *cmd)
   // port_control() should return binaries
   set_port_control_flags(port, PORT_CONTROL_FLAG_BINARY);
 
-  if (supervisor_spawn(&context->sup) < 0) {
+  if (supervisor_spawn(&context->sup, exe_path) < 0) {
     driver_free(context);
     return ERL_DRV_ERROR_ERRNO;
   }

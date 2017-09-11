@@ -9,7 +9,8 @@ struct sup_h {
   int events;
 };
 
-int supervisor_spawn(struct sup_h *sup);
+int supervisor_spawn(struct sup_h *sup, char *exe_path);
+void supervisor_loop(int fd_comm, int fd_events);
 int supervisor_terminate(struct sup_h *sup);
 
 #ifndef ACK_MESSAGE_SIZE
