@@ -34,10 +34,7 @@ TARGETS = $(OUTDIR)/subproc_unix_supervisor \
 all: $(TARGETS)
 
 clean:
-	$(gen_verbose) rm -f *.o
-	$(gen_verbose) rm -f $(OUTDIR)/subproc_unix_supervisor
-	$(gen_verbose) rm -f $(OUTDIR)/subproc_sup_drv.so
-	$(gen_verbose) rm -f $(OUTDIR)/subproc_unix.so
+	$(gen_verbose) rm -f *.o $(TARGETS)
 
 #-----------------------------------------------------------------------------
 # main compilation
