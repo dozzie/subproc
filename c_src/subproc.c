@@ -13,6 +13,12 @@
 
 // }}}
 //----------------------------------------------------------
+// local includes {{{
+
+#include "int_pack.h"
+
+// }}}
+//----------------------------------------------------------
 // Erlang port driver {{{
 
 #include <erl_driver.h>
@@ -35,6 +41,11 @@
 
 struct subproc_context {
   enum { passive, active, once } read_mode;
+  enum { list, binary } data_mode;
+  enum { raw, pfx1, pfx2, pfx4, line } packet_mode;
+  size_t buffer_size;
+  size_t buffer_used;
+  char *buffer;
   int fdin;
   int fdout;
   pid_t pid;
@@ -95,7 +106,15 @@ ErlDrvData driver_start(ErlDrvPort port, char *cmd)
   context->read_mode = passive;
   context->fdin = context->fdout = -1;
   context->pid = -1;
+  context->read_mode = passive;
+  context->data_mode = list;
+  context->packet_mode = raw;
+  context->buffer_used = context->buffer_size = 0;
+  context->buffer = NULL;
   context->erl_port = port;
+
+  // port_control() should return binaries
+  set_port_control_flags(port, PORT_CONTROL_FLAG_BINARY);
 
   return (ErlDrvData)context;
 }
@@ -145,8 +164,120 @@ ErlDrvSSizeT driver_control(ErlDrvData drv_data, unsigned int command,
                             char *buf, ErlDrvSizeT len,
                             char **rbuf, ErlDrvSizeT rlen)
 {
-  // TODO: implement me
-  return 0;
+  struct subproc_context *context = (struct subproc_context *)drv_data;
+
+  if (command == 0) {
+    // initialization: setting file descriptors and maybe PID
+
+    if (context->fdin != -1 || context->fdout != -1) // FDs already set
+      return -1;
+
+    // `buf' contains [FDR, FDW] or [FDR, FDW, PID], so 8 or 12 bytes
+    context->fdin = unpack32((unsigned char *)buf);
+    context->fdout = unpack32((unsigned char *)(buf + 4));
+    if (len == 12)
+      context->pid = unpack32((unsigned char *)(buf + 8));
+
+    if (context->fdin > 0) {
+      fcntl(context->fdin, F_SETFL,
+            O_NONBLOCK | fcntl(context->fdin, F_GETFL));
+      ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdin);
+      driver_select(context->erl_port, event, ERL_DRV_USE, 1);
+    }
+
+    if (context->fdout > 0) {
+      fcntl(context->fdout, F_SETFL,
+            O_NONBLOCK | fcntl(context->fdout, F_GETFL));
+      ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdout);
+      driver_select(context->erl_port, event, ERL_DRV_USE, 1);
+    }
+
+    return 0;
+  }
+
+  if (command == 1) {
+    // setopts()
+
+    if (len != 3 && len != 7)
+      return -1;
+
+    unsigned int read_mode   = buf[0];
+    unsigned int data_mode   = buf[1];
+    unsigned int packet_mode = buf[2];
+    if (read_mode > 3 || data_mode > 2 || packet_mode > 5)
+      return -1;
+
+    switch (read_mode) {
+      case 1: context->read_mode = passive; break;
+      case 2: context->read_mode = active; break;
+      case 3: context->read_mode = once; break;
+      default: break; // 0, no change
+    }
+    switch (data_mode) {
+      case 1: context->data_mode = list; break;
+      case 2: context->data_mode = binary; break;
+      default: break; // 0, no change
+    }
+    switch (packet_mode) {
+      case 1: context->packet_mode = raw; break;
+      case 2: context->packet_mode = pfx1; break;
+      case 3: context->packet_mode = pfx2; break;
+      case 4: context->packet_mode = pfx4; break;
+      case 5: context->packet_mode = line; break;
+      default: break; // 0, no change
+    }
+
+    if (len == 7) {
+      size_t new_size = unpack32((unsigned char *)(buf + 3));
+      // TODO: careful about shrinking a buffer with data
+      // TODO: context->buffer = driver_realloc(context->buffer, new_size);
+      context->buffer_size = new_size;
+    }
+
+    return 0;
+  }
+
+  if (command == 2) {
+    // getopts()
+
+    // this should never be called
+    if (context->pid <= 0 && 7 > rlen) *rbuf = driver_alloc(7);
+    if (context->pid > 0 && 11 > rlen) *rbuf = driver_alloc(11);
+
+    switch (context->read_mode) {
+      case passive: (*rbuf)[0] = 1; break;
+      case active:  (*rbuf)[0] = 2; break;
+      case once:    (*rbuf)[0] = 3; break;
+      default:      (*rbuf)[0] = 0; break; // never reached
+    }
+    switch (context->data_mode) {
+      case list:   (*rbuf)[1] = 1; break;
+      case binary: (*rbuf)[1] = 2; break;
+      default:     (*rbuf)[1] = 0; break; // never reached
+    }
+    switch (context->packet_mode) {
+      case raw:  (*rbuf)[2] = 1; break;
+      case pfx1: (*rbuf)[2] = 2; break;
+      case pfx2: (*rbuf)[2] = 3; break;
+      case pfx4: (*rbuf)[2] = 4; break;
+      case line: (*rbuf)[2] = 5; break;
+      default:   (*rbuf)[2] = 0; break; // never reached
+    }
+    store32((unsigned char *)(*rbuf + 3), context->buffer_size);
+
+    if (context->pid > 0) {
+      store32((unsigned char *)(*rbuf + 7), context->pid);
+      return 11;
+    } else {
+      return 7;
+    }
+  }
+
+  // TODO: "child terminated" notification
+  // TODO: "read one packet", called from recv()
+  // TODO: "close FD" command
+
+  return -1;
 }
 
 // }}}

@@ -49,7 +49,7 @@ HEADERS = int_pack.h proto_command.h proto_event.h signal_names.h \
 SUBPROC_EXE_OBJS = supervisor_exe.o supervisor_loop.o proto_command.o proto_event.o int_pack.o
 SUBPROC_SUP_OBJS = subproc_sup.o supervisor.o int_pack.o
 SUBPROC_UNIX_OBJS = subproc_unix.o signal_names.o
-SUBPROC_OBJS = subproc.o
+SUBPROC_OBJS = subproc.o int_pack.o
 
 $(OUTDIR)/subproc_unix_supervisor: $(SUBPROC_EXE_OBJS)
 	$(link_verbose) $(CC) -fPIC $(LDFLAGS) -o $@ $^ $(LDLIBS)
