@@ -27,6 +27,7 @@ link_verbose = $(link_verbose_$(V))
 OUTDIR ?= ../priv
 TARGETS = $(OUTDIR)/subproc_unix_supervisor \
           $(OUTDIR)/subproc_sup_drv.so \
+          $(OUTDIR)/subproc_drv.so \
           $(OUTDIR)/subproc_unix.so
 
 .PHONY: all clean
@@ -48,11 +49,15 @@ HEADERS = int_pack.h proto_command.h proto_event.h signal_names.h \
 SUBPROC_EXE_OBJS = supervisor_exe.o supervisor_loop.o proto_command.o proto_event.o int_pack.o
 SUBPROC_SUP_OBJS = subproc_sup.o supervisor.o int_pack.o
 SUBPROC_UNIX_OBJS = subproc_unix.o signal_names.o
+SUBPROC_OBJS = subproc.o
 
 $(OUTDIR)/subproc_unix_supervisor: $(SUBPROC_EXE_OBJS)
 	$(link_verbose) $(CC) -fPIC $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(OUTDIR)/subproc_sup_drv.so: $(SUBPROC_SUP_OBJS)
+	$(link_verbose) $(CC) -fPIC -shared $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+$(OUTDIR)/subproc_drv.so: $(SUBPROC_OBJS)
 	$(link_verbose) $(CC) -fPIC -shared $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(OUTDIR)/subproc_unix.so: $(SUBPROC_UNIX_OBJS)
