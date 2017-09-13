@@ -339,7 +339,7 @@ ioctl_setfd(Port, STDIO, PID) ->
     {in_out, {FDR, FDW}} -> <<FDR:32, FDW:32>>
   end,
   PIDPart = case PID of
-    undefined -> <<>>;
+    undefined -> <<0:32>>;
     _ when is_integer(PID) -> <<PID:32>>
   end,
   port_control(Port, 0, [STDIOPart, PIDPart]),
@@ -401,7 +401,7 @@ setopts_packet_mode(#opts{packet = line}) -> <<5:8>>.
 -spec setopts_buffer_size(Opts :: #opts{}) ->
   binary().
 
-setopts_buffer_size(#opts{packet_size = undefined}) -> <<>>;
+setopts_buffer_size(#opts{packet_size = undefined}) -> <<0:32>>;
 setopts_buffer_size(#opts{packet_size = Size}) -> <<Size:32>>.
 
 %% }}}
@@ -413,16 +413,14 @@ setopts_buffer_size(#opts{packet_size = Size}) -> <<Size:32>>.
   #opts{}.
 
 ioctl_getopts(Port) ->
-  case port_control(Port, 2, <<>>) of
-    <<ReadMode:8, DataMode:8, PacketMode:8, BufSize:32, PID:32>> -> ok;
-    <<ReadMode:8, DataMode:8, PacketMode:8, BufSize:32>> -> PID = undefined
-  end,
+  <<ReadMode:8, DataMode:8, PacketMode:8, BufSize:32, PID:32>> =
+    port_control(Port, 2, <<>>),
   _Result = #opts{
     mode = getopts_data_mode(DataMode),
     active = getopts_read_mode(ReadMode),
     packet = getopts_packet_mode(PacketMode),
     packet_size = BufSize,
-    pid = PID
+    pid = getopts_pid(PID)
   }.
 
 %%----------------------------------------------------------
@@ -455,6 +453,14 @@ getopts_packet_mode(2) -> 1;
 getopts_packet_mode(3) -> 2;
 getopts_packet_mode(4) -> 4;
 getopts_packet_mode(5) -> line.
+
+%% @doc Decode PID.
+
+-spec getopts_pid(V :: integer()) ->
+  subproc_unix:os_pid() | undefined.
+
+getopts_pid(0) -> undefined;
+getopts_pid(PID) -> PID.
 
 %% }}}
 %%----------------------------------------------------------

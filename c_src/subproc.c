@@ -172,11 +172,15 @@ ErlDrvSSizeT driver_control(ErlDrvData drv_data, unsigned int command,
     if (context->fdin != -1 || context->fdout != -1) // FDs already set
       return -1;
 
+    if (len != 12)
+      return -1;
+
     // `buf' contains [FDR, FDW] or [FDR, FDW, PID], so 8 or 12 bytes
     context->fdin = unpack32((unsigned char *)buf);
     context->fdout = unpack32((unsigned char *)(buf + 4));
-    if (len == 12)
-      context->pid = unpack32((unsigned char *)(buf + 8));
+    pid_t pid = unpack32((unsigned char *)(buf + 8));
+    if (pid > 0)
+      context->pid = pid;
 
     if (context->fdin > 0) {
       fcntl(context->fdin, F_SETFL,
@@ -198,7 +202,7 @@ ErlDrvSSizeT driver_control(ErlDrvData drv_data, unsigned int command,
   if (command == 1) {
     // setopts()
 
-    if (len != 3 && len != 7)
+    if (len != 7)
       return -1;
 
     unsigned int read_mode   = buf[0];
@@ -227,12 +231,14 @@ ErlDrvSSizeT driver_control(ErlDrvData drv_data, unsigned int command,
       default: break; // 0, no change
     }
 
-    if (len == 7) {
-      size_t new_size = unpack32((unsigned char *)(buf + 3));
-      // TODO: careful about shrinking a buffer with data
-      // TODO: context->buffer = driver_realloc(context->buffer, new_size);
-      context->buffer_size = new_size;
-    }
+    size_t new_size = unpack32((unsigned char *)(buf + 3));
+    if (new_size == 0)
+      // no change to buffer size
+      return 0;
+
+    // TODO: careful about shrinking a buffer with data
+    // TODO: context->buffer = driver_realloc(context->buffer, new_size);
+    context->buffer_size = new_size;
 
     return 0;
   }
@@ -241,8 +247,7 @@ ErlDrvSSizeT driver_control(ErlDrvData drv_data, unsigned int command,
     // getopts()
 
     // this should never be called
-    if (context->pid <= 0 && 7 > rlen) *rbuf = driver_alloc(7);
-    if (context->pid > 0 && 11 > rlen) *rbuf = driver_alloc(11);
+    if (11 > rlen) *rbuf = driver_alloc(11);
 
     switch (context->read_mode) {
       case passive: (*rbuf)[0] = 1; break;
@@ -265,12 +270,9 @@ ErlDrvSSizeT driver_control(ErlDrvData drv_data, unsigned int command,
     }
     store32((unsigned char *)(*rbuf + 3), context->buffer_size);
 
-    if (context->pid > 0) {
-      store32((unsigned char *)(*rbuf + 7), context->pid);
-      return 11;
-    } else {
-      return 7;
-    }
+    store32((unsigned char *)(*rbuf + 7),
+            (context->pid > 0) ? context->pid : 0);
+    return 11;
   }
 
   // TODO: "child terminated" notification
