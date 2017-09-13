@@ -41,7 +41,7 @@
 
 struct subproc_context {
   enum { passive, active, once } read_mode;
-  enum { list, binary } data_mode;
+  enum { string, binary } data_mode;
   enum { raw, pfx1, pfx2, pfx4, line } packet_mode;
   size_t buffer_size;
   size_t buffer_used;
@@ -107,7 +107,7 @@ ErlDrvData driver_start(ErlDrvPort port, char *cmd)
   context->fdin = context->fdout = -1;
   context->pid = -1;
   context->read_mode = passive;
-  context->data_mode = list;
+  context->data_mode = string;
   context->packet_mode = raw;
   context->buffer_used = context->buffer_size = 0;
   context->buffer = NULL;
@@ -214,7 +214,7 @@ ErlDrvSSizeT driver_control(ErlDrvData drv_data, unsigned int command,
       default: break; // 0, no change
     }
     switch (data_mode) {
-      case 1: context->data_mode = list; break;
+      case 1: context->data_mode = string; break;
       case 2: context->data_mode = binary; break;
       default: break; // 0, no change
     }
@@ -251,7 +251,7 @@ ErlDrvSSizeT driver_control(ErlDrvData drv_data, unsigned int command,
       default:      (*rbuf)[0] = 0; break; // never reached
     }
     switch (context->data_mode) {
-      case list:   (*rbuf)[1] = 1; break;
+      case string: (*rbuf)[1] = 1; break;
       case binary: (*rbuf)[1] = 2; break;
       default:     (*rbuf)[1] = 0; break; // never reached
     }
