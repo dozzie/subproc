@@ -83,6 +83,30 @@ ERL_NIF_TERM unix_close(ErlNifEnv* env, int argc, const ERL_NIF_TERM *argv)
   return enif_make_atom(env, "ok");
 }
 
+static
+ERL_NIF_TERM unix_getuid(ErlNifEnv* env, int argc, const ERL_NIF_TERM *argv)
+{
+  return enif_make_int(env, getuid());
+}
+
+static
+ERL_NIF_TERM unix_geteuid(ErlNifEnv* env, int argc, const ERL_NIF_TERM *argv)
+{
+  return enif_make_int(env, geteuid());
+}
+
+static
+ERL_NIF_TERM unix_getgid(ErlNifEnv* env, int argc, const ERL_NIF_TERM *argv)
+{
+  return enif_make_int(env, getgid());
+}
+
+static
+ERL_NIF_TERM unix_getegid(ErlNifEnv* env, int argc, const ERL_NIF_TERM *argv)
+{
+  return enif_make_int(env, getegid());
+}
+
 //----------------------------------------------------------------------------
 // translation functions
 
@@ -143,6 +167,10 @@ static
 ErlNifFunc nif_functions[] = {
   {"waitpid", 1, unix_waitpid},
   {"close", 1,   unix_close},
+  {"getuid", 0,  unix_getuid},
+  {"geteuid", 0, unix_geteuid},
+  {"getgid", 0,  unix_getgid},
+  {"getegid", 0, unix_getegid},
   {"errno_to_posix", 1, translate_errno_to_posix},
   {"signal_name", 1,    translate_signal_name},
   {"signal_number", 1,  translate_signal_number}

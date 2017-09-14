@@ -9,11 +9,11 @@
 -module(subproc_unix).
 
 %% unix API
--export([waitpid/1, close/1]).
+-export([waitpid/1, close/1, getuid/0, geteuid/0, getgid/0, getegid/0]).
 %% translation functions
 -export([errno_to_posix/1, signal_name/1, signal_number/1]).
 
--export_type([os_pid/0, os_fd/0]).
+-export_type([os_pid/0, os_fd/0, uid/0, gid/0]).
 -export_type([posix/0]).
 -export_type([exit_code/0, signal/0, signal_name/0, signal_number/0]).
 
@@ -25,6 +25,12 @@
 
 -type os_fd() :: non_neg_integer().
 %% File descriptor, usable for `read(2)', `write(2)', and `close(2)'.
+
+-type uid() :: 0 .. 65535.
+%% UID number of a process.
+
+-type gid() :: 0 .. 65535.
+%% GID number of a process.
 
 -type posix() :: inet:posix().
 %% Atom representation of an `errno' value.
@@ -90,6 +96,38 @@ waitpid(_Pid) ->
   ok | {error, badarg | posix()}.
 
 close(_FD) ->
+  erlang:nif_error(nif_not_loaded).
+
+%% @doc `getuid(2)': get UID with which BEAM VM runs.
+
+-spec getuid() ->
+  uid().
+
+getuid() ->
+  erlang:nif_error(nif_not_loaded).
+
+%% @doc `geteuid(2)': get effective UID with which BEAM VM runs.
+
+-spec geteuid() ->
+  uid().
+
+geteuid() ->
+  erlang:nif_error(nif_not_loaded).
+
+%% @doc `getgid(2)': get GID with which BEAM VM runs.
+
+-spec getgid() ->
+  gid().
+
+getgid() ->
+  erlang:nif_error(nif_not_loaded).
+
+%% @doc `getegid(2)': get effective GID with which BEAM VM runs.
+
+-spec getegid() ->
+  gid().
+
+getegid() ->
   erlang:nif_error(nif_not_loaded).
 
 %%%---------------------------------------------------------------------------
