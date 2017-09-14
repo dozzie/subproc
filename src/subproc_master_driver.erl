@@ -193,8 +193,7 @@ close(Port) ->
                | stderr_to_stdout
                | pgroup
                | term_pgroup
-               | {termsig,
-                   subproc_unix:signal_name() | subproc_unix:signal_number()}
+               | {termsig, subproc_unix:signal()}
                | {nice, integer()}
                | {user, uid() | user()}
                | {group, gid() | group()}
@@ -261,9 +260,8 @@ exec_result_event(Port, ID) ->
 kill(Port, ID) when is_integer(ID) ->
   kill(Port, ID, default).
 
--spec kill(handle(), subproc_id(), default | Signal) ->
-  ok | {error, nxchild | bad_signal | posix() | badarg}
-  when Signal :: subproc_unix:signal_number() | subproc_unix:signal_name().
+-spec kill(handle(), subproc_id(), default | subproc_unix:signal()) ->
+  ok | {error, nxchild | bad_signal | posix() | badarg}.
 
 kill(Port, ID, Signal) when is_integer(ID) ->
   try build_kill_request(ID, Signal) of
@@ -471,8 +469,7 @@ build_exec_request(Command, Args, Options) ->
 
 -record(exec, {
   env :: term(), % TODO: define me
-  termsig = close :: close | subproc_unix:signal_name()
-                   | subproc_unix:signal_number(),
+  termsig = close :: close | subproc_unix:signal(),
   stdio = default :: default | bidir | in | out | in_out,
   stderr_to_stdout = false :: boolean(),
   socket = false :: boolean(),
@@ -644,9 +641,8 @@ pack_string(String) ->
 
 %% @doc Build a kill request.
 
--spec build_kill_request(subproc_id(), Signal) ->
-  request()
-  when Signal :: subproc_unix:signal_name() | subproc_unix:signal_number().
+-spec build_kill_request(subproc_id(), subproc_unix:signal()) ->
+  request().
 
 build_kill_request(ID, Signal) ->
   SigNum = case Signal of

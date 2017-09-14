@@ -15,7 +15,7 @@
 
 -export_type([os_pid/0, os_fd/0]).
 -export_type([posix/0]).
--export_type([exit_code/0, signal_name/0, signal_number/0]).
+-export_type([exit_code/0, signal/0, signal_name/0, signal_number/0]).
 
 %%%---------------------------------------------------------------------------
 %%% types {{{
@@ -31,6 +31,9 @@
 
 -type exit_code() :: 0 .. 255.
 %% Exit code of a process.
+
+-type signal() :: signal_number() | signal_name().
+%% Signal representation.
 
 -type signal_number() :: 1 .. 31.
 %% Integer value of a signal. Different OSes can assign different meaning to

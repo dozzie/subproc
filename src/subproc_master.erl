@@ -69,8 +69,7 @@ exec(Command, Args, Options) ->
 
 %% @doc Kill a child process running under unix supervisor.
 
--spec kill(port(), default | subproc_unix:signal_name() |
-                   subproc_unix:signal_number()) ->
+-spec kill(port(), default | subproc_unix:signal()) ->
   ok | {error, nxchild | subproc_unix:posix() | badarg}.
 
 kill(Port, Signal) ->
