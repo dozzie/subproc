@@ -258,6 +258,27 @@ uint32_t millisleep(struct millisleep_t *total, unsigned int chunk)
 
 // }}}
 //----------------------------------------------------------------------------
+// signal handlers {{{
+
+static int term_signal_received;
+
+static
+void term_signal_handler(int signum)
+{
+  term_signal_received = 1;
+}
+
+static
+void set_signal_handler(int signum)
+{
+  struct sigaction handler;
+  memset(&handler, 0, sizeof(handler));
+  handler.sa_handler = term_signal_handler;
+  sigaction(signum, &handler, NULL);
+}
+
+// }}}
+//----------------------------------------------------------------------------
 // main loop
 
 // `buffer' should be EVENT_MESSAGE_SIZE bytes large
@@ -283,6 +304,11 @@ void supervisor_loop(int fd_comm, int fd_events)
   set_close_on_exec(fd_comm);
   set_close_on_exec(fd_events);
 
+  term_signal_received = 0;
+  set_signal_handler(SIGHUP);
+  set_signal_handler(SIGINT);
+  set_signal_handler(SIGTERM);
+
   // options
   uint32_t shutdown_timeout = 0;
   int shutdown_send_sigkill = 0;
@@ -291,7 +317,7 @@ void supervisor_loop(int fd_comm, int fd_events)
   struct children_t children;
   memset(&children, 0, sizeof(children));
 
-  while (1) {
+  while (!term_signal_received) {
     int ready = poll(&pollcomm, 1, LOOP_INTERVAL);
 
     char evbuf[EVENT_MESSAGE_SIZE];
