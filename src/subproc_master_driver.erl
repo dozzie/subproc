@@ -88,6 +88,8 @@
 %%% public interface
 %%%---------------------------------------------------------------------------
 
+%% @doc Spawn a unix subprocess supervisor.
+
 -spec open(Options :: [Option]) ->
   {ok, handle()} | {error, badarg}
   when Option :: {shutdown_timeout, timeout()}
@@ -156,12 +158,23 @@ open_option(no_shutdown_kill, {Timeout, _OldKillFlag}) ->
 %% }}}
 %%----------------------------------------------------------
 
+%% @doc Get pid of unix subprocess supervisor.
+
 -spec pidof(handle()) ->
   subproc_unix:os_pid().
 
 pidof(Port) ->
   <<PID:32>> = port_control(Port, 1, <<>>),
   PID.
+
+%% @doc Close the channels used for communication with unix subprocess
+%%   supervisor.
+%%
+%%   This causes the supervisor to terminate its subprocesses and exit, but
+%%   none of the events will be received.
+%%
+%% @see shutdown/3
+%% @see shutdown/1
 
 -spec close(handle()) ->
   ok.
@@ -184,6 +197,12 @@ close(Port) ->
 
 %%----------------------------------------------------------
 %% exec() {{{
+
+%% @doc Execute a command and return its ID, OS PID, and file descriptors for
+%%   STDIO.
+%%
+%%   NOTE: `term_pgroup' option causes `termsig' to be sent to whole process
+%%   group on leader's termination.
 
 -spec exec(handle(), file:filename(), [string()], Options :: [Option]) ->
     {ok, {subproc_id(), subproc_unix:os_pid(), STDIO}}
@@ -255,11 +274,18 @@ exec_result_event(Port, ID) ->
 %%----------------------------------------------------------
 %% kill() {{{
 
+%% @doc Send a kill request to unix subprocess supervisor.
+%%
+%%   A subprocess will be sent its default termination signal (`termsig'
+%%   option from {@link exec/4}).
+
 -spec kill(handle(), subproc_id()) ->
   ok | {error, nxchild | posix() | badarg}.
 
 kill(Port, ID) when is_integer(ID) ->
   kill(Port, ID, default).
+
+%% @doc Send a kill request to unix subprocess supervisor.
 
 -spec kill(handle(), subproc_id(), default | subproc_unix:signal()) ->
   ok | {error, nxchild | bad_signal | posix() | badarg}.
@@ -284,6 +310,26 @@ kill(Port, ID, Signal) when is_integer(ID) ->
 %%----------------------------------------------------------
 %% shutdown_options() {{{
 
+%% @doc Set shutdown options for unix subprocess supervisor.
+%%
+%%   `Timeout' is a number of milliseconds for supervisor to wait for
+%%   subprocesses to terminate before giving up and exiting. It can be an atom
+%%   `infinity' to indicate that the supervisor should wait indefinitely.
+%%
+%%   If `KillFlag' is `true', after `Timeout' the supervisor sends `SIGKILL'
+%%   signal to the subprocesses (process groups, if possible) that are still
+%%   alive and waits another `Timeout' for them to exit. The second timeout is
+%%   to handle processes in uninterruptible sleep (e.g. hanged on a file
+%%   operation on NFS filesystem). Setting `KillFlag' to `true' has no effect
+%%   when `Timeout' is `infinity'.
+%%
+%%   After all subprocesses terminate (or after timeout), supervisor sends
+%%   a shutdown report event ({@link decode_event/1} returns it as
+%%   {@type @{shutdown,AliveChildren :: non_neg_integer()@}}) and exits.
+%%
+%% @see shutdown/3
+%% @see shutdown/1
+
 -spec shutdown_options(handle(), timeout(), boolean()) ->
   ok | {error, badarg}.
 
@@ -303,6 +349,17 @@ shutdown_options(Port, Timeout, KillFlag) ->
 %%----------------------------------------------------------
 %% shutdown() {{{
 
+%% @doc Set unix subprocess supervisor shutdown options and order it to
+%%   terminate.
+%%
+%%   This is a convenience wrapper for {@link shutdown_options/3} and
+%%   {@link shutdown/1} functions.
+%%
+%%   Shutdown procedure is described in {@link shutdown_options/3}.
+%%
+%% @see shutdown_options/3
+%% @see shutdown/1
+
 -spec shutdown(handle(), timeout(), boolean()) ->
   ok | {error, badarg}.
 
@@ -311,6 +368,17 @@ shutdown(Port, Timeout, KillFlag) ->
     ok -> shutdown(Port);
     {error, Reason} -> {error, Reason}
   end.
+
+%% @doc Order unix subprocess supervisor to terminate.
+%%
+%%   Shutdown procedure is described in {@link shutdown_options/3}.
+%%
+%%   Port is still open after sending this request, and port owner still
+%%   receives normal events ({@type event_message()}).
+%%
+%% @see shutdown_options/3
+%% @see shutdown/3
+%% @see close/1
 
 -spec shutdown(handle()) ->
   ok.
@@ -328,6 +396,8 @@ shutdown(Port) ->
 %%% decoding events
 %%%---------------------------------------------------------------------------
 
+%% @doc Decode event received from unix subprocess supervisor.
+
 -spec decode_event(event_message()) ->
     ExecEvent
   | ExecErrorEvent
@@ -340,8 +410,8 @@ shutdown(Port) ->
                            Stage :: atom(), Error :: posix()},
        ExitEvent :: {exit, subproc_id(), ExitCode :: 0 .. 255},
        SignalEvent :: {signal, subproc_id(),
-                        {SigNum :: subproc_unix:signal_number(),
-                          SigName :: subproc_unix:signal_name()}},
+                        {subproc_unix:signal_number(),
+                          subproc_unix:signal_name()}},
        ShutdownEvent :: {shutdown, AliveChildren :: non_neg_integer()},
        STDIO :: {bidir, FDRW} | {in, FDR} | {out, FDW} | {in_out, {FDR, FDW}},
        FDRW :: subproc_unix:os_fd(),
@@ -378,6 +448,8 @@ decode_event({subproc_sup, _Port, EventData, FDs} = _Event) ->
 %%%---------------------------------------------------------------------------
 %%% formatting errors
 %%%---------------------------------------------------------------------------
+
+%% @doc Format a reason from error tuple as a usable error message.
 
 -spec format_error(Reason :: term()) ->
   string().

@@ -75,7 +75,7 @@ exec(Command, Args, Options) ->
 kill(Port, Signal) ->
   gen_server:call(?MODULE, {kill, Port, Signal}, infinity).
 
-%% @doc Format an error reported by this module.
+%% @doc Format a reason from error tuple as a usable error message.
 
 -spec format_error(term()) ->
   string().
