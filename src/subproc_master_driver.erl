@@ -209,8 +209,8 @@ close(Port) ->
 -spec exec(handle(), file:filename(), [string()], Options :: [Option]) ->
     {ok, {subproc_id(), subproc_unix:os_pid(), STDIO}}
   | {error, RequestError | ExecError | EventError | badarg}
-  when Option :: {stdio, Type :: socket | pipe,
-                   Mode :: bidir | in | out | in_out}
+  when Option :: {stdio, bidir | in | out | in_out}
+               | {type, socket | pipe}
                | stderr_to_stdout
                | pgroup
                | term_pgroup
@@ -566,7 +566,7 @@ build_exec_request(Command, Args, Options) ->
 
 -spec exec_options(Options :: [Option]) ->
   #exec{}
-  when Option :: atom() | {atom(), term()} | {atom(), term(), term()}.
+  when Option :: atom() | {atom(), term()}.
 
 exec_options(Options) ->
   case lists:foldr(fun exec_option/2, #exec{}, Options) of
@@ -582,10 +582,11 @@ exec_options(Options) ->
 -spec exec_option(Option :: term(), #exec{}) ->
   #exec{}.
 
-exec_option({stdio, Type, Mode}, Opts)
-when Type == socket orelse Type == pipe,
-     Mode == bidir orelse Mode == in orelse Mode == out orelse Mode == in_out ->
-  Opts#exec{stdio = Mode, socket = (Type == socket)};
+exec_option({stdio, Mode}, Opts)
+when Mode == bidir; Mode == in; Mode == out; Mode == in_out ->
+  Opts#exec{stdio = Mode};
+exec_option({type, Type}, Opts) when Type == socket; Type == pipe ->
+  Opts#exec{socket = (Type == socket)};
 exec_option(stderr_to_stdout, Opts) ->
   Opts#exec{stderr_to_stdout = true};
 exec_option(pgroup, Opts) ->
@@ -619,7 +620,8 @@ exec_option({argv0, Name}, Opts) when is_list(Name) ->
 -spec is_option(Option :: term()) ->
   boolean().
 
-is_option({stdio, _, _}) -> true;
+is_option({stdio, _}) -> true;
+is_option({type, _}) -> true;
 is_option(stderr_to_stdout) -> true;
 is_option(pgroup)      -> true;
 is_option(term_pgroup) -> true;
