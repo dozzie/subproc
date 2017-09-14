@@ -67,7 +67,7 @@
 %% @doc Open a port for reading/writing to/from subprocess.
 
 -spec open(STDIO, [option() | {pid, subproc_unix:os_pid()}]) ->
-  {ok, handle()} | {error, badarg}
+  {ok, handle()} | {error, badarg | system_limit | posix()}
   when STDIO :: {bidir, FDRW} | {in, FDR} | {out, FDW} | {in_out, {FDR, FDW}},
        FDRW :: subproc_unix:os_fd(),
        FDR :: subproc_unix:os_fd(),
