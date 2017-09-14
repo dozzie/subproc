@@ -17,6 +17,7 @@
 -export([open/2, close/1, close/2]).
 -export([send/2, recv/2, recv/3]).
 -export([setopts/2, getopts/2, controlling_process/2]).
+-export([valid_options/1]).
 -export([format_error/1]).
 
 -export_type([handle/0, option/0, option_name/0, message/0]).
@@ -468,6 +469,17 @@ getopts_pid(PID) -> PID.
 %%%---------------------------------------------------------------------------
 %%% parsing options
 %%%---------------------------------------------------------------------------
+
+%% @doc Check if the list of options is valid.
+
+-spec valid_options([option() | {pid, subproc_unix:os_pid()}]) ->
+  boolean().
+
+valid_options(Options) ->
+  case options(Options, #opts{}) of
+    {ok, _} -> true;
+    {error, _} -> false
+  end.
 
 %% @doc Convert a list of options to a usable structure.
 

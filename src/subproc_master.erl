@@ -38,6 +38,13 @@
   % TODO: ID => port (exit and signal events)
 }).
 
+-record(opts, {
+  port_type = subproc :: subproc | native | raw_fd,
+  native_autoclose = true :: boolean(),
+  exec_options = [] :: [term()],
+  port_options = [] :: [term()]
+}).
+
 %%% }}}
 %%%---------------------------------------------------------------------------
 %%% supervision tree API
@@ -62,10 +69,37 @@ start_link() ->
 %% @doc Execute a command as a subprocess under unix supervisor.
 
 -spec exec(file:filename(), [string()], [term()]) ->
-  {ok, port()} | {error, term()}.
+  {ok, port() | RawInfo} | {error, bad_owner | badarg | term()}
+  when RawInfo :: {ID, PID, STDIO},
+       ID :: pos_integer(),
+       PID :: subproc_unix:os_pid(),
+       STDIO :: tuple().
 
 exec(Command, Args, Options) ->
-  gen_server:call(?MODULE, {exec, self(), Command, Args, Options}, infinity).
+  Request = {exec, self(), Command, Args, Options},
+  case gen_server:call(?MODULE, Request, infinity) of
+    {ok, Port} when is_port(Port) ->
+      {ok, Port};
+    {ok, {native, _ID, {in_out, {FDR, FDW}}, PortOpts, AutoClose}} ->
+      try open_port({fd, FDR, FDW}, PortOpts) of
+        Port when AutoClose ->
+          % TODO: register port for killing and autoclose
+          {ok, Port};
+        Port when not AutoClose ->
+          % TODO: register port for killing
+          {ok, Port}
+      catch
+        error:Reason ->
+          % TODO: ask for killing the subprocess
+          subproc_unix:close(FDR),
+          subproc_unix:close(FDW),
+          {error, Reason}
+      end;
+    {ok, {raw_fd, ID, PID, STDIO}} ->
+      {ok, {ID, PID, STDIO}};
+    {error, Reason} ->
+      {error, Reason}
+  end.
 
 %% @doc Kill a child process running under unix supervisor.
 
@@ -118,14 +152,36 @@ terminate(_Arg, _State = #state{port = MasterPort}) ->
 %% @private
 %% @doc Handle {@link gen_server:call/2}.
 
-handle_call({exec, _Owner, Command, Args, Options} = _Request, _From,
+handle_call({exec, Owner, Command, Args, OptionList} = _Request, _From,
             State = #state{port = MasterPort}) ->
-  case subproc_master_driver:exec(MasterPort, Command, Args, Options) of
-    {ok, {ID, PID, STDIO}} ->
-      % TODO: spawn a worker port, register subprocess, make `Owner' the owner
-      % of the worker port, preserve link to the worker port
-      Result = {ID, PID, STDIO},
-      {reply, {ok, Result}, State};
+  % FIXME: We parse one of the option lists (after splitting) twice, once for
+  % checking for validity (for native port, `subproc_master_driver' options
+  % for STDIO mode; for subproc port, `subproc_worker_driver' options for full
+  % verification), and second time for actual work. The modules could provide
+  % a way to compile the options and pass them prepared. Hopefully, the option
+  % lists are short.
+  case options(OptionList) of
+    Opts = #opts{} ->
+      case spawn_port(MasterPort, Command, Args, Opts) of
+        {subproc, Port, ID} ->
+          try subproc_worker_driver:controlling_process(Port, Owner) of
+            _ ->
+              % TODO: register subprocess (`ID' + `Port'), preserve (restore)
+              % link to `Port'
+              {reply, {ok, Port}, State}
+          catch
+            _:_ ->
+              subproc_master_driver:kill(MasterPort, ID),
+              subproc_worker_driver:close(Port),
+              {reply, {error, bad_owner}, State}
+          end;
+        {native, PortStub} ->
+          {reply, {ok, PortStub}, State};
+        {raw_fd, PortStub} ->
+          {reply, {ok, PortStub}, State};
+        {error, Reason} ->
+          {reply, {error, Reason}, State}
+      end;
     {error, Reason} ->
       {reply, {error, Reason}, State}
   end;
@@ -201,6 +257,103 @@ code_change(_OldVsn, State, _Extra) ->
 
 %% }}}
 %%----------------------------------------------------------
+
+%%%---------------------------------------------------------------------------
+
+%% @doc Spawn a port according to provided options.
+
+-spec spawn_port(subproc_master_driver:handle(), file:filename(), [string()],
+                 Opts :: #opts{}) ->
+    {subproc, subproc_worker_driver:handle(), subproc_master_driver:id()}
+  | {native, NativePortStub :: tuple()}
+  | {raw_fd, RawFDPortStub :: tuple()}
+  | {error, ExecError | WorkerError}
+  when ExecError :: term(),
+       WorkerError :: badarg.
+
+spawn_port(MasterPort, Command, Args,
+           #opts{port_type = PortType, exec_options = ExecOpts,
+                 port_options = PortOpts, native_autoclose = ACFlag}) ->
+  case subproc_master_driver:exec(MasterPort, Command, Args, ExecOpts) of
+    {ok, {ID, PID, STDIO}} when PortType == subproc ->
+      case subproc_worker_driver:open(STDIO, [{pid, PID} | PortOpts]) of
+        {ok, Port} ->
+          {subproc, Port, ID};
+        {error, Reason} ->
+          close_stdio(STDIO),
+          {error, Reason}
+      end;
+    {ok, {ID, _PID, STDIO}} when PortType == native ->
+      PortStub = {native, ID, STDIO, PortOpts, ACFlag},
+      {native, PortStub};
+    {ok, {ID, PID, STDIO}} when PortType == raw_fd ->
+      PortStub = {raw_fd, ID, PID, STDIO},
+      {raw_fd, PortStub};
+    {error, Reason} ->
+      {error, Reason}
+  end.
+
+%% @doc Close subprocess' STDIO.
+
+close_stdio({bidir, FDRW} = _STDIO) ->
+  subproc_unix:close(FDRW);
+close_stdio({in, FDR} = _STDIO) ->
+  subproc_unix:close(FDR);
+close_stdio({out, FDW} = _STDIO) ->
+  subproc_unix:close(FDW);
+close_stdio({in_out, {FDR, FDW}} = _STDIO) ->
+  subproc_unix:close(FDR),
+  subproc_unix:close(FDW).
+
+%%%---------------------------------------------------------------------------
+
+%% @doc Split options into categories.
+%%
+%%   The categories are: exec options for unix subproc supervisor, port
+%%   creation options (type and FD autoclosing for native port), and port's
+%%   own options.
+
+-spec options([term()]) ->
+  #opts{} | {error, badarg}.
+
+options(Options) ->
+  case lists:foldr(fun option/2, #opts{}, Options) of
+    Opts = #opts{port_type = subproc, port_options = PortOpts} ->
+      % don't execute a command if it's known to fail at port creation
+      case subproc_worker_driver:valid_options(PortOpts) of
+        true -> Opts;
+        false -> {error, badarg}
+      end;
+    Opts = #opts{port_type = native, exec_options = ExecOpts} ->
+      % Erlang's built-in port requires two separate descriptors
+      % XXX: I'd be glad to validate port options here, but there's no
+      % "dry-run" mode
+      case subproc_master_driver:stdio_mode(ExecOpts) of
+        in_out -> Opts;
+        _ -> {error, badarg}
+      end;
+    Opts = #opts{port_type = raw_fd, port_options = []} ->
+      Opts;
+    _Opts = #opts{port_type = raw_fd, port_options = [_|_]} ->
+      % port options are not allowed when raw FDs are returned
+      {error, badarg}
+  end.
+
+%% @doc Fold workhorse for {@link options/1}.
+
+-spec option(Option :: term(), #opts{}) ->
+  #opts{}.
+
+option(subproc, Opts) -> Opts#opts{port_type = subproc};
+option(native,  Opts) -> Opts#opts{port_type = native};
+option(raw_fd,  Opts) -> Opts#opts{port_type = raw_fd};
+option(autoclose,    Opts) -> Opts#opts{native_autoclose = true};
+option(no_autoclose, Opts) -> Opts#opts{native_autoclose = false};
+option(Option, Opts = #opts{exec_options = EOpts, port_options = POpts}) ->
+  case subproc_master_driver:is_option(Option) of
+    true  -> Opts#opts{exec_options = [Option | EOpts]};
+    false -> Opts#opts{port_options = [Option | POpts]}
+  end.
 
 %%%---------------------------------------------------------------------------
 %%% vim:ft=erlang:foldmethod=marker

@@ -14,6 +14,8 @@
 -export([exec/4, kill/2, kill/3, shutdown_options/3, shutdown/1, shutdown/3]).
 -export([decode_event/1]).
 -export([format_error/1]).
+%% function for `subproc_master'
+-export([is_option/1, stdio_mode/1]).
 
 -export_type([handle/0]).
 -export_type([user/0, group/0, uid/0, gid/0]).
@@ -605,6 +607,43 @@ exec_option({cd, Dir}, Opts) when is_list(Dir) ->
   Opts#exec{cwd = Dir};
 exec_option({argv0, Name}, Opts) when is_list(Name) ->
   Opts#exec{argv0 = Name}.
+
+%% @private
+%% @doc Check if a value is an option for {@link exec()}.
+%%
+%%   The function does not validate value of the option, only checks if it is
+%%   applicable.
+%%
+%% @see exec_option/2
+
+-spec is_option(Option :: term()) ->
+  boolean().
+
+is_option({stdio, _, _}) -> true;
+is_option(stderr_to_stdout) -> true;
+is_option(pgroup)      -> true;
+is_option(term_pgroup) -> true;
+is_option({termsig, _}) -> true;
+is_option({ignore_signals, _}) -> true;
+is_option({nice, _})  -> true;
+is_option({user, _})  -> true;
+is_option({group, _}) -> true;
+is_option({cd, _})    -> true;
+is_option({argv0, _}) -> true;
+is_option(_Value) -> false.
+
+%% @private
+%% @doc Check what STDIO mode will be formed from exec options.
+
+-spec stdio_mode(Options :: [term()]) ->
+  bidir | in | out | in_out | {error, badarg}.
+
+stdio_mode(Options) ->
+  try exec_options(Options) of
+    #exec{stdio = Mode} -> Mode
+  catch
+    _:_ -> {error, badarg}
+  end.
 
 %% }}}
 %%----------------------------------------------------------
