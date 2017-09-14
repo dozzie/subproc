@@ -40,7 +40,7 @@
 //----------------------------------------------------------
 
 //----------------------------------------------------------------------------
-// Erlang port driver API {{{
+// Erlang port driver API
 
 struct subproc_sup_context {
   struct sup_h sup;
@@ -50,25 +50,25 @@ struct subproc_sup_context {
 //----------------------------------------------------------
 // entry point definition {{{
 
-ErlDrvData   driver_start(ErlDrvPort port, char *cmd);
-void         driver_stop(ErlDrvData drv_data);
-ErlDrvSSizeT driver_control(ErlDrvData drv_data, unsigned int command, char *buf, ErlDrvSizeT len, char **rbuf, ErlDrvSizeT rlen);
-void         driver_ready_input(ErlDrvData drv_data, ErlDrvEvent event);
-void         driver_stop_select(ErlDrvEvent event, void *reserved);
+static ErlDrvData   cdrv_start(ErlDrvPort port, char *cmd);
+static void         cdrv_stop(ErlDrvData drv_data);
+static ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command, char *buf, ErlDrvSizeT len, char **rbuf, ErlDrvSizeT rlen);
+static void         cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event);
+static void         cdrv_stop_select(ErlDrvEvent event, void *reserved);
 
 ErlDrvEntry driver_entry = {
   NULL,                         // int        init(void)
-  driver_start,                 // ErlDrvData start(ErlDrvPort port, char *cmd)
-  driver_stop,                  // void       stop(ErlDrvData drv_data)
-  NULL,                         // void       output(ErlDrvData drv_data, char *buf, int len) // Erlang has data for driver
-  driver_ready_input,           // void       ready_input(ErlDrvData, ErlDrvEvent)
-  NULL,                         // void       ready_output(ErlDrvData, ErlDrvEvent)
+  cdrv_start,                   // ErlDrvData start(ErlDrvPort port, char *cmd)
+  cdrv_stop,                    // void       stop(ErlDrvData drv_data)
+  NULL,                         // void       output(ErlDrvData drv_data, char *buf, ErlDrvSizeT len) // port_command/2 handler
+  cdrv_ready_input,             // void       ready_input(ErlDrvData, ErlDrvEvent)  // "ready for reading" event
+  NULL,                         // void       ready_output(ErlDrvData, ErlDrvEvent) // "ready for writing" event
   PORT_DRIVER_NAME,             // <driver name>
   NULL,                         // void       finish(void)
   NULL,                         // <reserved>
-  driver_control,               // int        control(...) // port_control/3 handler
+  cdrv_control,                 // int        control(...) // port_control/3 handler
   NULL,                         // void       timeout(ErlDrvData drv_data)
-  NULL,                         // void       outputv(ErlDrvData drv_data, ErlIOVec *ev) // Erlang has data for driver
+  NULL,                         // void       outputv(ErlDrvData drv_data, ErlIOVec *ev) // port_command/2 handler, faster
   NULL,                         // void       ready_async(ErlDrvData drv_data, ErlDrvThreadData thread_data)
   NULL,                         // void       flush(ErlDrvData drv_data)
   NULL,                         // int        call(...) // erlang:port_call/3 handler
@@ -78,8 +78,8 @@ ErlDrvEntry driver_entry = {
   ERL_DRV_EXTENDED_MINOR_VERSION,
   ERL_DRV_FLAG_USE_PORT_LOCKING,  // driver flags
   NULL,                         // <reserved>
-  NULL,                         // called when process monitor dies
-  driver_stop_select            // called to close an event object
+  NULL,                         // void  process_exit(...) // called when monitored process dies
+  cdrv_stop_select              // void  stop_select(ErlDrvEvent event, void *reserved) // called to close an event object
 };
 
 // the same as <driver name> in structure above, but as identifer instead of
@@ -93,7 +93,8 @@ DRIVER_INIT(PORT_DRIVER_NAME_SYM)
 //----------------------------------------------------------
 // Erlang port start {{{
 
-ErlDrvData driver_start(ErlDrvPort port, char *cmd)
+static
+ErlDrvData cdrv_start(ErlDrvPort port, char *cmd)
 {
   char *exe_path = strchr(cmd, ' ');
   if (exe_path == NULL)
@@ -124,7 +125,8 @@ ErlDrvData driver_start(ErlDrvPort port, char *cmd)
 //----------------------------------------------------------
 // Erlang port stop {{{
 
-void driver_stop(ErlDrvData drv_data)
+static
+void cdrv_stop(ErlDrvData drv_data)
 {
   struct subproc_sup_context *context = (struct subproc_sup_context *)drv_data;
 
@@ -141,7 +143,8 @@ void driver_stop(ErlDrvData drv_data)
 //----------------------------------------------------------
 // Erlang event close (after port stop) {{{
 
-void driver_stop_select(ErlDrvEvent event, void *reserved)
+static
+void cdrv_stop_select(ErlDrvEvent event, void *reserved)
 {
   long int fd = (long int)event;
   close(fd);
@@ -151,9 +154,10 @@ void driver_stop_select(ErlDrvEvent event, void *reserved)
 //----------------------------------------------------------
 // Erlang port control {{{
 
-ErlDrvSSizeT driver_control(ErlDrvData drv_data, unsigned int command,
-                            char *buf, ErlDrvSizeT len,
-                            char **rbuf, ErlDrvSizeT rlen)
+static
+ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
+                          char *buf, ErlDrvSizeT len,
+                          char **rbuf, ErlDrvSizeT rlen)
 {
   struct subproc_sup_context *context = (struct subproc_sup_context *)drv_data;
 
@@ -181,7 +185,8 @@ ErlDrvSSizeT driver_control(ErlDrvData drv_data, unsigned int command,
 //----------------------------------------------------------
 // Erlang input on select socket {{{
 
-void driver_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
+static
+void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
 {
   struct subproc_sup_context *context = (struct subproc_sup_context *)drv_data;
   // `event' is events descriptor
@@ -250,6 +255,5 @@ void driver_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
 // }}}
 //----------------------------------------------------------
 
-// }}}
 //----------------------------------------------------------------------------
 // vim:ft=c:foldmethod=marker:nowrap
