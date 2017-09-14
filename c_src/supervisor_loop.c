@@ -653,6 +653,14 @@ int child_spawn(struct comm_t *cmd, child_t *child, void *buffer, int *fds)
 
   // TODO: set environment
 
+  struct sigaction ignore_action;
+  memset(&ignore_action, 0, sizeof(ignore_action));
+  ignore_action.sa_handler = SIG_IGN;
+  unsigned int sig;
+  for (sig = 1; sig <= 64; ++sig)
+    if ((cmd->exec_opts.sigmask & (((uint64_t)1) << (sig - 1))) != 0)
+      sigaction(sig, &ignore_action, NULL);
+
   execve(cmd->exec_opts.command, cmd->exec_opts.argv, NULL);
   // if we got here, exec() must have failed
   int error[2] = { STAGE_EXEC, errno };

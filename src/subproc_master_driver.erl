@@ -194,6 +194,7 @@ close(Port) ->
                | pgroup
                | term_pgroup
                | {termsig, subproc_unix:signal()}
+               | {ignore_signals, [subproc_unix:signal()]}
                | {nice, integer()}
                | {user, uid() | user()}
                | {group, gid() | group()}
@@ -470,6 +471,7 @@ build_exec_request(Command, Args, Options) ->
 -record(exec, {
   env :: term(), % TODO: define me
   termsig = close :: close | subproc_unix:signal(),
+  ignore_signals = [] :: [subproc_unix:signal()],
   stdio = default :: default | bidir | in | out | in_out,
   stderr_to_stdout = false :: boolean(),
   socket = false :: boolean(),
@@ -518,6 +520,9 @@ exec_option(term_pgroup, Opts) ->
   Opts#exec{term_pgroup = true};
 exec_option({termsig, Signal}, Opts) when is_atom(Signal); is_integer(Signal) ->
   Opts#exec{termsig = Signal};
+exec_option({ignore_signals, SignalList}, Opts) ->
+  true = lists:all(fun(S) -> is_atom(S) orelse is_integer(S) end, SignalList),
+  Opts#exec{ignore_signals = SignalList};
 exec_option({nice, Nice}, Opts) when is_integer(Nice) ->
   Opts#exec{nice = Nice};
 exec_option({user, User}, Opts) when is_integer(User); is_list(User) ->
@@ -587,6 +592,8 @@ build_exec_options(Opts = #exec{}) ->
         error:badarg -> erlang:error(bad_signal)
       end
   end,
+  SigIgnMask = make_signal_mask(Opts#exec.ignore_signals, 0),
+  OptSigIgn = <<16#73:8, SigIgnMask:64>>,
   OptNice = case Opts of
     #exec{nice = undefined} -> [];
     #exec{nice = Nice} -> <<16#70:8, Nice:8>>
@@ -609,7 +616,28 @@ build_exec_options(Opts = #exec{}) ->
     #exec{argv0 = undefined} -> [];
     #exec{argv0 = Name} -> pack_tagged_string(16#30, Name)
   end,
-  _Result = [OptTermSig, OptCwd, OptUser, OptGroup, OptNice, OptArgv0].
+  _Result = [
+    OptTermSig, OptSigIgn, OptCwd, OptUser, OptGroup, OptNice, OptArgv0
+  ].
+
+%% @doc Make a signal mask from list of signals (names and/or numbers).
+
+-spec make_signal_mask([subproc_unix:signal()], non_neg_integer()) ->
+  non_neg_integer().
+
+make_signal_mask([] = _SignalList, Mask) ->
+  Mask;
+make_signal_mask([SigNum | Rest], Mask)
+when is_integer(SigNum), SigNum > 0, SigNum =< 64 ->
+  make_signal_mask(Rest, Mask bor (1 bsl (SigNum - 1)));
+make_signal_mask([SigName | Rest], Mask) when is_atom(SigName) ->
+  try subproc_unix:signal_number(SigName) of
+    SigNum -> make_signal_mask(Rest, Mask bor (1 bsl (SigNum - 1)))
+  catch
+    _:_ -> erlang:error(bad_signal)
+  end;
+make_signal_mask(_SignalList, _Mask) ->
+  erlang:error(bad_signal).
 
 %% }}}
 %%----------------------------------------------------------

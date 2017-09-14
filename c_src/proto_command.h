@@ -26,6 +26,7 @@ struct comm_t {
       // TODO: struct { char *name; char *value } *env_set;
       // TODO: char **env_clear;
       unsigned int termsig;
+      uint64_t sigmask; // ignored signals
       // modes:
       //   bidirectional -- one descriptor for both reading and writing
       //   in     -- one descriptor, for parent to write to

@@ -31,6 +31,7 @@
 #define OPT_PRIORITY  0x70 // int8_t
 #define OPT_UID       0x75 // uint16_t
 #define OPT_GID       0x67 // uint16_t
+#define OPT_SIGMASK   0x73 // uint64_t
 // string option tags
 #define OPT_USER      0x55 // getpwnam()
 #define OPT_GROUP     0x47 // getgrnam()
@@ -290,6 +291,12 @@ int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
         comm->exec_opts.gid = unpack16(data + read_at);
         comm->exec_opts.use_gid = 1;
         read_at += 2;
+      break;
+      case OPT_SIGMASK:
+        if (size - read_at < 8)
+          return ERR_PARSE;
+        comm->exec_opts.sigmask = unpack64(data + read_at);
+        read_at += 8;
       break;
 
       // string options
