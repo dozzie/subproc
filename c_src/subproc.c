@@ -179,7 +179,7 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
 {
   struct subproc_context *context = (struct subproc_context *)drv_data;
 
-  if (command == 0) {
+  if (command == 0) { // port initialization {{{
     // initialization: setting file descriptors and maybe PID
 
     if (context->fdin != -1 || context->fdout != -1) // FDs already set
@@ -210,9 +210,9 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     }
 
     return 0;
-  }
+  } // }}}
 
-  if (command == 1) {
+  if (command == 1) { // setopts() {{{
     // setopts()
 
     if (len != 7)
@@ -254,9 +254,9 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     context->buffer_size = new_size;
 
     return 0;
-  }
+  } // }}}
 
-  if (command == 2) {
+  if (command == 2) { // getopts() {{{
     // getopts()
 
     // this should never be called
@@ -286,9 +286,9 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     store32((unsigned char *)(*rbuf + 7),
             (context->pid > 0) ? context->pid : 0);
     return 11;
-  }
+  } // }}}
 
-  if (command == 3) {
+  if (command == 3) { // close(read|write|read_write) {{{
     // close FD(s)
 
     if (len != 1 || buf[0] < 1 || buf[0] > 3)
@@ -322,7 +322,7 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     }
 
     return 0;
-  }
+  } // }}}
 
   // TODO: "child terminated" notification
   // TODO: "read one packet", called from recv()
