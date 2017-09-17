@@ -165,14 +165,19 @@ close(Port) ->
 %%   subprocess.
 
 -spec close(handle(), read | write | read_write) ->
-  ok.
+  ok | {error, badarg}.
 
-close(_Port, read = _How) ->
-  'TODO';
-close(_Port, write = _How) ->
-  'TODO';
-close(_Port, read_write = _How) ->
-  'TODO'.
+close(Port, How) ->
+  Request = case How of
+    read -> <<1>>;
+    write -> <<2>>;
+    read_write -> <<3>>
+  end,
+  try port_control(Port, 3, Request) of
+    _ -> ok
+  catch
+    _:_ -> {error, badarg}
+  end.
 
 %%%---------------------------------------------------------------------------
 %%% input/output

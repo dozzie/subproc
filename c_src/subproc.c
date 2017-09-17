@@ -279,9 +279,29 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     return 11;
   }
 
+  if (command == 3) {
+    // close FD(s)
+
+    if (len != 1 || buf[0] < 1 || buf[0] > 3)
+      return -1;
+
+    if ((buf[0] == 1 || buf[0] == 3) && context->fdin >= 0) {
+      ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdin);
+      driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 0);
+      context->fdin = -1;
+    }
+    if ((buf[0] == 2 || buf[0] == 3) && context->fdout >= 0) {
+      // TODO: add flushing the write queue
+      ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdout);
+      driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_WRITE, 0);
+      context->fdout = -1;
+    }
+
+    return 0;
+  }
+
   // TODO: "child terminated" notification
   // TODO: "read one packet", called from recv()
-  // TODO: "close FD" command
 
   return -1;
 }
