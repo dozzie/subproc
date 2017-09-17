@@ -190,64 +190,66 @@ close(Port, How) ->
 
 send(Port, Data) ->
   port_command(Port, Data),
-  send_wait(Port, 100).
-
-%% @doc Port monitor routine that waits for the port to reply.
-%%
-%%   If the ports dies silently before sending an ACK/NAK, `{error,closed}'
-%%   is returned.
-
--spec send_wait(handle(), timeout()) ->
-  ok | {error, closed | posix()}.
-
-send_wait(Port, Interval) ->
-  receive
-    {subproc_reply, Port, ok} -> ok;
-    {subproc_reply, Port, {error, Reason}} -> {error, Reason}
-  after Interval ->
-      case erlang:port_info(Port, connected) of
-        {connected, _} -> send_wait(Port, Interval); % still alive
-        undefined -> {error, closed}
-      end
-  end.
+  reply_wait(Port, 100).
 
 %% @doc Read data from the subprocess.
 %%
-%% @todo Return value
+%%   Special errors:
+%%   <ul>
+%%     <li>`closed' -- reading descriptor closed</li>
+%%     <li>`eintr' -- socket mode changed to active while `recv()'</li>
+%%     <li>`ealready' -- another `recv()' call already in progress</li>
+%%     <li>`einval' -- socket is in active mode</li>
+%%   </ul>
 
 -spec recv(handle(), non_neg_integer()) ->
-  ok.
+    {ok, Data :: string() | binary()}
+  | eof
+  | {error, closed | posix()}.
 
 recv(Port, Length) ->
   recv(Port, Length, infinity).
 
 %% @doc Read data from the subprocess.
 %%
-%% @todo Return value
+%%   Special errors:
+%%   <ul>
+%%     <li>`timeout' -- nothing to read</li>
+%%     <li>`closed' -- reading descriptor closed</li>
+%%     <li>`eintr' -- socket mode changed to active while `recv()'</li>
+%%     <li>`ealready' -- another `recv()' call already in progress</li>
+%%     <li>`einval' -- socket is in active mode</li>
+%%   </ul>
 
 -spec recv(handle(), non_neg_integer(), timeout()) ->
-  ok.
+    {ok, Data :: string() | binary()}
+  | eof
+  | {error, closed | timeout | posix()}.
 
-recv(_Port, _Length, _Timeout) ->
-  %case port_control(Port, {active, once}) of
-  %  {ok, OldMode} ->
-  %    receive
-  %      message() -> ...
-  %    after Timeout ->
-  %      port_control(Port, OldMode),
-  %      % flush a possible pending message
-  %      receive
-  %        message() -> ...
-  %      after 0 ->
-  %        {error, timeout}
-  %      end
-  %    end;
-  %  {error, active} ->
-  %    {error, einval}; % that's what gen_tcp returns on active sockets
-  %  {error, closed} ->
-  %    {error, closed}
-  %end.
-  'TODO'.
+recv(Port, Length, infinity = _Timeout) ->
+  port_control(Port, 4, <<Length:32>>),
+  reply_wait(Port, 100);
+recv(Port, Length, Timeout) when is_integer(Timeout) ->
+  port_control(Port, 4, <<Length:32>>),
+  receive
+    {subproc_reply, Port, {ok, Data}} -> {ok, Data};
+    {subproc_reply, Port, eof} -> eof;
+    {subproc_reply, Port, {error, Reason}} -> {error, Reason}
+  after Timeout ->
+      try port_control(Port, 5, <<>>) of % cancel recv()
+        _ ->
+          receive
+            {subproc_reply, Port, {ok, Data}} -> {ok, Data};
+            {subproc_reply, Port, eof} -> eof;
+            {subproc_reply, Port, {error, Reason}} -> {error, Reason}
+          after 0 ->
+              {error, timeout}
+          end
+      catch
+        % port died on us while we were waiting for the reply
+        _:_ -> {error, closed}
+      end
+  end.
 
 %%%---------------------------------------------------------------------------
 %%% options
@@ -343,6 +345,28 @@ controlling_process(Port, Pid) ->
 
 format_error(_) ->
   "TODO".
+
+%%%---------------------------------------------------------------------------
+%%% port monitor
+%%%---------------------------------------------------------------------------
+
+%% @doc Port monitor routine that waits for the port to reply.
+%%
+%%   If the ports dies silently before sending an ACK/NAK, `{error,closed}'
+%%   is returned.
+
+-spec reply_wait(handle(), timeout()) ->
+  Reply :: term() | {error, closed}.
+
+reply_wait(Port, Interval) ->
+  receive
+    {subproc_reply, Port, Reply} -> Reply
+  after Interval ->
+      case erlang:port_info(Port, connected) of
+        {connected, _} -> reply_wait(Port, Interval); % still alive
+        undefined -> {error, port_closed}
+      end
+  end.
 
 %%%---------------------------------------------------------------------------
 %%% port ioctl

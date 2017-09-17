@@ -34,6 +34,9 @@
 
 #define PORT_DRIVER_NAME_LEN (sizeof(PORT_DRIVER_NAME) - 1)
 
+#define DEFAULT_BUFFER_SIZE (((4 * PIPE_BUF) > 4096) ? 4 * PIPE_BUF : 4096)
+#define MAX_BUFFER_SIZE (64 * 1024 * 1024) // 64MB (gen_tcp uses the same max)
+
 // }}}
 //----------------------------------------------------------
 
@@ -41,21 +44,23 @@
 // Erlang port driver API
 
 struct subproc_context {
+  int reading;
   enum { passive, active, once } read_mode;
   enum { string, binary } data_mode;
   enum { raw, pfx1, pfx2, pfx4, line } packet_mode;
-  size_t buffer_size;
   size_t buffer_used;
-  char *buffer;
+  ErlDrvBinary *buffer;
   int fdin;
   int fdout;
   pid_t pid;
   ErlDrvPort erl_port;
   ErlDrvTermData write_reply_to;
+  ErlDrvTermData read_reply_to;
 };
 
 static int cdrv_send_ok(ErlDrvPort port, ErlDrvTermData receiver);
 static int cdrv_send_data(ErlDrvPort port, ErlDrvTermData receiver, ErlDrvTermData *data, size_t len);
+static int cdrv_send_active(ErlDrvPort port, ErlDrvTermData *data, size_t len);
 static int cdrv_send_error(ErlDrvPort port, ErlDrvTermData receiver, int error);
 
 //----------------------------------------------------------
@@ -113,13 +118,14 @@ ErlDrvData cdrv_start(ErlDrvPort port, char *cmd)
   struct subproc_context *context =
     driver_alloc(sizeof(struct subproc_context));
 
+  context->reading = 0;
   context->read_mode = passive;
   context->fdin = context->fdout = -1;
   context->pid = -1;
   context->read_mode = passive;
   context->data_mode = string;
   context->packet_mode = raw;
-  context->buffer_used = context->buffer_size = 0;
+  context->buffer_used = 0;
   context->buffer = NULL;
   context->erl_port = port;
 
@@ -224,6 +230,12 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     if (read_mode > 3 || data_mode > 2 || packet_mode > 5)
       return -1;
 
+    if (read_mode != passive && context->read_mode == passive &&
+        context->reading) {
+      context->reading = 0;
+      cdrv_send_error(context->erl_port, context->read_reply_to, EINTR);
+    }
+
     switch (read_mode) {
       case 1: context->read_mode = passive; break;
       case 2: context->read_mode = active; break;
@@ -244,6 +256,12 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       default: break; // 0, no change
     }
 
+    if ((context->read_mode == active || context->read_mode == once) &&
+        context->fdin >= 0) {
+      ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdin);
+      driver_select(context->erl_port, event, ERL_DRV_READ, 1);
+    }
+
     size_t new_size = unpack32((unsigned char *)(buf + 3));
     if (new_size == 0)
       // no change to buffer size
@@ -251,7 +269,6 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
 
     // TODO: careful about shrinking a buffer with data
     // TODO: context->buffer = driver_realloc(context->buffer, new_size);
-    context->buffer_size = new_size;
 
     return 0;
   } // }}}
@@ -281,7 +298,8 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       case line: (*rbuf)[2] = 5; break;
       default:   (*rbuf)[2] = 0; break; // never reached
     }
-    store32((unsigned char *)(*rbuf + 3), context->buffer_size);
+    store32((unsigned char *)(*rbuf + 3),
+            (context->buffer != NULL) ? context->buffer->orig_size : 0);
 
     store32((unsigned char *)(*rbuf + 7),
             (context->pid > 0) ? context->pid : 0);
@@ -298,6 +316,17 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdin);
       driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 0);
       context->fdin = -1;
+
+      if (context->read_mode == passive && context->reading) {
+        context->reading = 0;
+        ErlDrvTermData data[] = {
+          ERL_DRV_ATOM, driver_mk_atom("error"),
+          ERL_DRV_ATOM, driver_mk_atom("closed"),
+          ERL_DRV_TUPLE, 2
+        };
+        cdrv_send_data(context->erl_port, context->read_reply_to,
+                       data, sizeof(data) / sizeof(data[0]));
+      }
     }
     if ((buf[0] == 2 || buf[0] == 3) && context->fdout >= 0) {
       ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdout);
@@ -324,8 +353,58 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     return 0;
   } // }}}
 
+  if (command == 4) { // recv() {{{
+    // recv(): errors are signaled by sending a message
+    if (context->fdin == -1) {
+      ErlDrvTermData data[] = {
+        ERL_DRV_ATOM, driver_mk_atom("error"),
+        ERL_DRV_ATOM, driver_mk_atom("closed"),
+        ERL_DRV_TUPLE, 2
+      };
+      cdrv_send_data(context->erl_port, driver_caller(context->erl_port),
+                     data, sizeof(data) / sizeof(data[0]));
+      return 0;
+    }
+
+    if (context->read_mode != passive) {
+      cdrv_send_error(context->erl_port, driver_caller(context->erl_port),
+                      EINVAL);
+      return 0;
+    }
+
+    if (context->reading) {
+      cdrv_send_error(context->erl_port, driver_caller(context->erl_port),
+                      EALREADY);
+      return 0;
+    }
+
+    context->reading = 1;
+    context->read_reply_to = driver_caller(context->erl_port);
+    ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdin);
+    driver_select(context->erl_port, event, ERL_DRV_READ, 1);
+    return 0;
+  } // }}}
+
+  if (command == 5) { // cancel_recv() {{{
+    // recv() cancel
+    if (context->fdin == -1)
+      // possibly a race between read() error and read timeout; don't crash
+      // the caller
+      return 0;
+
+    // dangling recv() cancel is not allowed
+    if (context->read_mode != passive ||
+        (context->reading &&
+         driver_caller(context->erl_port) != context->read_reply_to))
+      return -1;
+
+    context->reading = 0;
+    ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdin);
+    driver_select(context->erl_port, event, ERL_DRV_READ, 0);
+    return 0;
+  } // }}}
+
   // TODO: "child terminated" notification
-  // TODO: "read one packet", called from recv()
 
   return -1;
 }
@@ -340,19 +419,66 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
   struct subproc_context *context = (struct subproc_context *)drv_data;
   // `event' is fdin descriptor
 
-  ErlDrvPort port = context->erl_port;
-  ErlDrvTermData owner = driver_connected(port);
+  // TODO: use `context->buffer'
+  // TODO: honour `context->packet_mode'
+  char buffer[DEFAULT_BUFFER_SIZE];
+  ssize_t result = read((long int)event, buffer, sizeof(buffer));
 
-  ErlDrvTermData data[] = { // send `{subproc, Port, Data}'
-    ERL_DRV_ATOM, driver_mk_atom("subproc"),
-    ERL_DRV_PORT, driver_mk_port(port),
-    //ERL_DRV_BUF2BINARY, (ErlDrvTermData)buffer, read_len,
-    ERL_DRV_BUF2BINARY, (ErlDrvTermData)(""), 1,
-    ERL_DRV_TUPLE, 3
-  };
+  // this should not be necessary, but it does no harm
+  if (result < 0 && (errno == EWOULDBLOCK || errno == EAGAIN))
+    return;
 
-  // FIXME: this will be removed in OTP R17, use erl_drv_send_term()
-  driver_send_term(port, owner, data, sizeof(data) / sizeof(data[0]));
+  int was_recv = (context->read_mode == passive);
+  ErlDrvTermData reply[10];
+  size_t reply_len = 0;
+
+  if (result > 0) { // {ok, Data :: string() | binary()}
+    // tuple: element 1
+    reply[reply_len++] = ERL_DRV_ATOM;
+    reply[reply_len++] = driver_mk_atom("ok");
+
+    // tuple: element 2
+    if (context->data_mode == string)
+      reply[reply_len++] = ERL_DRV_STRING;
+    else
+      reply[reply_len++] = ERL_DRV_BUF2BINARY;
+    reply[reply_len++] = (ErlDrvTermData)(buffer);
+    reply[reply_len++] = (ErlDrvTermData)result;
+
+    reply[reply_len++] = ERL_DRV_TUPLE;
+    reply[reply_len++] = 2;
+
+    if (context->read_mode != active) { // once | passive
+      driver_select(context->erl_port, event, ERL_DRV_READ, 0);
+      context->read_mode = passive;
+      context->reading = 0;
+    }
+  } else { // eof | {error, Reason :: atom()}
+    if (result <= 0) {
+      // tuple: element 1
+      reply[reply_len++] = ERL_DRV_ATOM;
+      reply[reply_len++] = driver_mk_atom("error");
+
+      // tuple: element 2
+      reply[reply_len++] = ERL_DRV_ATOM;
+      reply[reply_len++] = driver_mk_atom(erl_errno_id(errno));
+
+      reply[reply_len++] = ERL_DRV_TUPLE;
+      reply[reply_len++] = 2;
+    } else {
+      reply[reply_len++] = ERL_DRV_ATOM;
+      reply[reply_len++] = driver_mk_atom("eof");
+    }
+
+    driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 0);
+    context->reading = 0;
+    context->fdin = -1;
+  }
+
+  if (was_recv)
+    cdrv_send_data(context->erl_port, context->read_reply_to, reply, reply_len);
+  else
+    cdrv_send_active(context->erl_port, reply, reply_len);
 }
 
 // }}}
@@ -493,6 +619,19 @@ void cdrv_flush(ErlDrvData drv_data)
 
 //----------------------------------------------------------------------------
 // message sending helpers {{{
+
+static
+int cdrv_send_active(ErlDrvPort port, ErlDrvTermData *data, size_t len)
+{
+  ErlDrvTermData reply[128] = {
+    ERL_DRV_ATOM, driver_mk_atom("subproc"),
+    ERL_DRV_PORT, driver_mk_port(port)
+  };
+  memcpy(reply + 4, data, sizeof(ErlDrvTermData) * len);
+  reply[4 + len] = ERL_DRV_TUPLE;
+  reply[5 + len] = 3;
+  return driver_send_term(port, driver_connected(port), reply, 6 + len);
+}
 
 static
 int cdrv_send_data(ErlDrvPort port, ErlDrvTermData receiver,
