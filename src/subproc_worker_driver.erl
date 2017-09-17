@@ -184,14 +184,32 @@ close(Port, How) ->
 %%%---------------------------------------------------------------------------
 
 %% @doc Send data to the subprocess.
-%%
-%% @todo Return value
 
 -spec send(handle(), iolist()) ->
-  ok.
+  ok | {error, closed | posix()}.
 
-send(_Port, _Data) ->
-  'TODO'.
+send(Port, Data) ->
+  port_command(Port, Data),
+  send_wait(Port, 100).
+
+%% @doc Port monitor routine that waits for the port to reply.
+%%
+%%   If the ports dies silently before sending an ACK/NAK, `{error,closed}'
+%%   is returned.
+
+-spec send_wait(handle(), timeout()) ->
+  ok | {error, closed | posix()}.
+
+send_wait(Port, Interval) ->
+  receive
+    {subproc_reply, Port, ok} -> ok;
+    {subproc_reply, Port, {error, Reason}} -> {error, Reason}
+  after Interval ->
+      case erlang:port_info(Port, connected) of
+        {connected, _} -> send_wait(Port, Interval); % still alive
+        undefined -> {error, closed}
+      end
+  end.
 
 %% @doc Read data from the subprocess.
 %%

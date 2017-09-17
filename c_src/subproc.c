@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <sys/uio.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <limits.h>
@@ -50,7 +51,12 @@ struct subproc_context {
   int fdout;
   pid_t pid;
   ErlDrvPort erl_port;
+  ErlDrvTermData write_reply_to;
 };
+
+static int cdrv_send_ok(ErlDrvPort port, ErlDrvTermData receiver);
+static int cdrv_send_data(ErlDrvPort port, ErlDrvTermData receiver, ErlDrvTermData *data, size_t len);
+static int cdrv_send_error(ErlDrvPort port, ErlDrvTermData receiver, int error);
 
 //----------------------------------------------------------
 // entry point definition {{{
@@ -59,7 +65,10 @@ static ErlDrvData   cdrv_start(ErlDrvPort port, char *cmd);
 static void         cdrv_stop(ErlDrvData drv_data);
 static ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command, char *buf, ErlDrvSizeT len, char **rbuf, ErlDrvSizeT rlen);
 static void         cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event);
+static void         cdrv_ready_output(ErlDrvData drv_data, ErlDrvEvent event);
 static void         cdrv_stop_select(ErlDrvEvent event, void *reserved);
+static void         cdrv_outputv(ErlDrvData drv_data, ErlIOVec *ev);
+static void         cdrv_flush(ErlDrvData drv_data);
 
 ErlDrvEntry driver_entry = {
   NULL,                         // int        init(void)
@@ -67,15 +76,15 @@ ErlDrvEntry driver_entry = {
   cdrv_stop,                    // void       stop(ErlDrvData drv_data)
   NULL,                         // void       output(ErlDrvData drv_data, char *buf, ErlDrvSizeT len) // port_command/2 handler
   cdrv_ready_input,             // void       ready_input(ErlDrvData, ErlDrvEvent)  // "ready for reading" event
-  NULL,                         // void       ready_output(ErlDrvData, ErlDrvEvent) // "ready for writing" event
+  cdrv_ready_output,            // void       ready_output(ErlDrvData, ErlDrvEvent) // "ready for writing" event
   PORT_DRIVER_NAME,             // <driver name>
   NULL,                         // void       finish(void)
   NULL,                         // <reserved>
   cdrv_control,                 // int        control(...) // port_control/3 handler
   NULL,                         // void       timeout(ErlDrvData drv_data)
-  NULL,                         // void       outputv(ErlDrvData drv_data, ErlIOVec *ev) // port_command/2 handler, faster
+  cdrv_outputv,                 // void       outputv(ErlDrvData drv_data, ErlIOVec *ev) // port_command/2 handler, faster
   NULL,                         // void       ready_async(ErlDrvData drv_data, ErlDrvThreadData thread_data)
-  NULL,                         // void       flush(ErlDrvData drv_data)
+  cdrv_flush,                   // void       flush(ErlDrvData drv_data)
   NULL,                         // int        call(...) // erlang:port_call/3 handler
   NULL,                         // void       event(ErlDrvData drv_data, ErlDrvEvent event, ErlDrvEventData event_data)
   ERL_DRV_EXTENDED_MARKER,
@@ -291,10 +300,25 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       context->fdin = -1;
     }
     if ((buf[0] == 2 || buf[0] == 3) && context->fdout >= 0) {
-      // TODO: add flushing the write queue
       ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdout);
       driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_WRITE, 0);
       context->fdout = -1;
+
+      ErlDrvSizeT queued_bytes = driver_sizeq(context->erl_port);
+      if (queued_bytes > 0) {
+        // NOTE: `send()' blocks until the write queue gets empty, so if this
+        // operation is called from the same process as `send()' (typically
+        // the port owner), the queue should already be empty
+        driver_deq(context->erl_port, queued_bytes);
+
+        ErlDrvTermData data[] = {
+          ERL_DRV_ATOM, driver_mk_atom("error"),
+          ERL_DRV_ATOM, driver_mk_atom("closed"),
+          ERL_DRV_TUPLE, 2
+        };
+        cdrv_send_data(context->erl_port, context->write_reply_to,
+                       data, sizeof(data) / sizeof(data[0]));
+      }
     }
 
     return 0;
@@ -333,6 +357,185 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
 
 // }}}
 //----------------------------------------------------------
+// Erlang output ready on select descriptor {{{
 
+static
+void cdrv_ready_output(ErlDrvData drv_data, ErlDrvEvent event)
+{
+  struct subproc_context *context = (struct subproc_context *)drv_data;
+  // `event' is fdout descriptor
+
+  ErlDrvSizeT queued_bytes = driver_sizeq(context->erl_port);
+  if (queued_bytes == 0) {
+    driver_select(context->erl_port, event, ERL_DRV_WRITE, 0);
+    set_busy_port(context->erl_port, 0);
+    return;
+  }
+
+  int iov_len;
+  SysIOVec *iov = driver_peekq(context->erl_port, &iov_len);
+
+  ssize_t result = writev((long int)event, (struct iovec *)iov, iov_len);
+  if (result > 0)
+    queued_bytes = driver_deq(context->erl_port, result);
+
+  if (queued_bytes == 0) {
+    cdrv_send_ok(context->erl_port, context->write_reply_to);
+
+    driver_select(context->erl_port, event, ERL_DRV_WRITE, 0);
+    set_busy_port(context->erl_port, 0);
+  } else if (result >= 0 || errno == EWOULDBLOCK || errno == EAGAIN) {
+    // partial write() (possibly the written part is zero); stay busy and
+    // selected (i.e., do nothing)
+  } else {
+    // write error
+    cdrv_send_error(context->erl_port, context->write_reply_to, errno);
+    driver_deq(context->erl_port, driver_sizeq(context->erl_port));
+    ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdout);
+    driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_WRITE, 0);
+    set_busy_port(context->erl_port, 0);
+    context->fdout = -1;
+  }
+}
+
+// }}}
+//----------------------------------------------------------
+// Erlang output {{{
+
+static
+void cdrv_outputv(ErlDrvData drv_data, ErlIOVec *ev)
+{
+  struct subproc_context *context = (struct subproc_context *)drv_data;
+
+  if (context->fdout < 0) {
+    ErlDrvTermData data[] = {
+      ERL_DRV_ATOM, driver_mk_atom("error"),
+      ERL_DRV_ATOM, driver_mk_atom("closed"),
+      ERL_DRV_TUPLE, 2
+    };
+    cdrv_send_data(context->erl_port, driver_caller(context->erl_port),
+                   data, sizeof(data) / sizeof(data[0]));
+    return;
+  }
+
+  SysIOVec *iov = ev->iov;
+  int iov_len = ev->vsize;
+  uint32_t packet_size = ev->size;
+  switch (context->packet_mode) {
+    case pfx1: case pfx2: case pfx4:
+      // add data prefix
+      // TODO: make space for packet prefix when iov[0].iov_len != 0 or
+      // iov[0].iov_base != NULL
+      iov[0].iov_len = context->packet_mode == pfx4 ? 4 :
+                       context->packet_mode == pfx2 ? 2 : 1;
+      iov[0].iov_base = (void *)&packet_size;
+    break;
+    default:
+      // add nothing
+    break;
+  }
+
+  ssize_t result = writev(context->fdout, (struct iovec *)iov, iov_len);
+
+  if (result == ev->size) {
+    cdrv_send_ok(context->erl_port, driver_caller(context->erl_port));
+  } else if ((result >= 0 && result < ev->size) ||
+             (result <  0 && (errno == EWOULDBLOCK || errno == EAGAIN))) {
+    // partial write() (possibly the written part is zero)
+
+    // NOTE: sending ACK/NAK is delayed until the queue is flushed
+    context->write_reply_to = driver_caller(context->erl_port);
+
+    // TODO: build ErlIOVec when iov != ev->iov
+    driver_enqv(context->erl_port, ev, (result > 0) ? result : 0);
+    ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdout);
+    driver_select(context->erl_port, event, ERL_DRV_WRITE, 1);
+    set_busy_port(context->erl_port, 1);
+  } else {
+    // write error
+    cdrv_send_error(context->erl_port, driver_caller(context->erl_port),
+                    errno);
+
+    // NOTE: the write queue should be empty here
+    ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdout);
+    driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_WRITE, 0);
+    context->fdout = -1;
+  }
+}
+
+// }}}
+//----------------------------------------------------------
+// flush write queue {{{
+
+static
+void cdrv_flush(ErlDrvData drv_data)
+{
+  struct subproc_context *context = (struct subproc_context *)drv_data;
+
+  ErlDrvSizeT queued_bytes = driver_sizeq(context->erl_port);
+  if (queued_bytes == 0)
+    // well, this callback wouldn't be called if queued_bytes == 0
+    return;
+
+  driver_deq(context->erl_port, queued_bytes);
+
+  ErlDrvTermData data[] = {
+    ERL_DRV_ATOM, driver_mk_atom("error"),
+    ERL_DRV_ATOM, driver_mk_atom("closed"),
+    ERL_DRV_TUPLE, 2
+  };
+  cdrv_send_data(context->erl_port, context->write_reply_to,
+                 data, sizeof(data) / sizeof(data[0]));
+}
+
+// }}}
+//----------------------------------------------------------
+
+//----------------------------------------------------------------------------
+// message sending helpers {{{
+
+static
+int cdrv_send_data(ErlDrvPort port, ErlDrvTermData receiver,
+                   ErlDrvTermData *data, size_t len)
+{
+  ErlDrvTermData reply[6 + 10] = {
+    ERL_DRV_ATOM, driver_mk_atom("subproc_reply"),
+    ERL_DRV_PORT, driver_mk_port(port)
+  };
+  memcpy(reply + 4, data, sizeof(ErlDrvTermData) * len);
+  reply[4 + len] = ERL_DRV_TUPLE;
+  reply[5 + len] = 3;
+  return driver_send_term(port, receiver, reply, 6 + len);
+}
+
+static
+int cdrv_send_ok(ErlDrvPort port, ErlDrvTermData receiver)
+{
+  ErlDrvTermData reply[] = {
+    ERL_DRV_ATOM, driver_mk_atom("subproc_reply"),
+    ERL_DRV_PORT, driver_mk_port(port),
+    ERL_DRV_ATOM, driver_mk_atom("ok"),
+    ERL_DRV_TUPLE, 3
+  };
+  return driver_send_term(port, receiver,
+                          reply, sizeof(reply) / sizeof(reply[0]));
+}
+
+static
+int cdrv_send_error(ErlDrvPort port, ErlDrvTermData receiver, int error)
+{
+  ErlDrvTermData reply[] = {
+    ERL_DRV_ATOM, driver_mk_atom("subproc_reply"),
+    ERL_DRV_PORT, driver_mk_port(port),
+    ERL_DRV_ATOM, driver_mk_atom("error"),
+    ERL_DRV_ATOM, driver_mk_atom(erl_errno_id(error)),
+    ERL_DRV_TUPLE, 2,
+    ERL_DRV_TUPLE, 3
+  };
+  return driver_send_term(port, receiver,
+                          reply, sizeof(reply) / sizeof(reply[0]));
+}
+
+// }}}
 //----------------------------------------------------------------------------
 // vim:ft=c:foldmethod=marker:nowrap
