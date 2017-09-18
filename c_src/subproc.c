@@ -76,7 +76,7 @@ struct subproc_context {
 
 static int cdrv_send_ok(ErlDrvPort port, ErlDrvTermData receiver);
 static int cdrv_send_data(ErlDrvPort port, ErlDrvTermData receiver, ErlDrvTermData *data, size_t len);
-static int cdrv_send_active(ErlDrvPort port, ErlDrvTermData *data, size_t len);
+static int cdrv_send_active(ErlDrvPort port, char *reply_tag, ErlDrvTermData *data, size_t len, size_t tuple_len);
 static int cdrv_send_error(ErlDrvPort port, ErlDrvTermData receiver, int error);
 
 static void cdrv_close_fd(struct subproc_context *context, unsigned int fds);
@@ -400,55 +400,61 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
   if (result < 0 && (errno == EWOULDBLOCK || errno == EAGAIN))
     return;
 
-  int was_recv = (context->read_mode == passive);
-  ErlDrvTermData reply[10];
-  size_t reply_len = 0;
+  if (context->read_mode == passive) {
+    if (result > 0) { // {ok, Data :: string() | binary()}
+      ErlDrvTermData reply[] = {
+        ERL_DRV_ATOM, driver_mk_atom("ok"),
+        ((context->data_mode == string) ? ERL_DRV_STRING : ERL_DRV_BUF2BINARY),
+          (ErlDrvTermData)(buffer), (ErlDrvTermData)result,
+        ERL_DRV_TUPLE, 2
+      };
+      cdrv_send_data(context->erl_port, context->read_reply_to,
+                     reply, sizeof(reply) / sizeof(reply[0]));
+      cdrv_stop_reading(context);
+    } else if (result == 0) { // eof
+      ErlDrvTermData reply[] = {
+        ERL_DRV_ATOM, driver_mk_atom("eof")
+      };
+      cdrv_send_data(context->erl_port, context->read_reply_to,
+                     reply, sizeof(reply) / sizeof(reply[0]));
+      cdrv_stop_reading(context);
+      cdrv_close_fd(context, FDR);
+    } else { // {error, Reason :: atom()}
+      cdrv_send_error(context->erl_port, context->read_reply_to, errno);
+      cdrv_stop_reading(context);
+      cdrv_close_fd(context, FDR);
+    }
+  }
 
-  if (result > 0) { // {ok, Data :: string() | binary()}
-    // tuple: element 1
-    reply[reply_len++] = ERL_DRV_ATOM;
-    reply[reply_len++] = driver_mk_atom("ok");
+  // one of the active modes
 
-    // tuple: element 2
-    if (context->data_mode == string)
-      reply[reply_len++] = ERL_DRV_STRING;
-    else
-      reply[reply_len++] = ERL_DRV_BUF2BINARY;
-    reply[reply_len++] = (ErlDrvTermData)(buffer);
-    reply[reply_len++] = (ErlDrvTermData)result;
+  if (result > 0) { // {subproc, Port, Data :: string() | binary()}
+    ErlDrvTermData reply[] = {
+      ((context->data_mode == string) ? ERL_DRV_STRING : ERL_DRV_BUF2BINARY),
+        (ErlDrvTermData)(buffer), (ErlDrvTermData)result
+    };
 
-    reply[reply_len++] = ERL_DRV_TUPLE;
-    reply[reply_len++] = 2;
+    cdrv_send_active(context->erl_port, "subproc", reply,
+                     sizeof(reply) / sizeof(reply[0]), 1);
 
-    if (context->read_mode != active) { // once | passive
+    if (context->read_mode == once) {
       cdrv_stop_reading(context);
       context->read_mode = passive;
     }
-  } else { // eof | {error, Reason :: atom()}
-    if (result <= 0) {
-      // tuple: element 1
-      reply[reply_len++] = ERL_DRV_ATOM;
-      reply[reply_len++] = driver_mk_atom("error");
+  } else if (result == 0) { // {subproc_closed, Port}
+    cdrv_send_active(context->erl_port, "subproc_closed", NULL, 0, 0);
+    cdrv_stop_reading(context);
+    cdrv_close_fd(context, FDR);
+  } else { // {subproc_error, Port, Reason :: atom()}
+    ErlDrvTermData reply[] = {
+      ERL_DRV_ATOM, driver_mk_atom(erl_errno_id(errno))
+    };
 
-      // tuple: element 2
-      reply[reply_len++] = ERL_DRV_ATOM;
-      reply[reply_len++] = driver_mk_atom(erl_errno_id(errno));
-
-      reply[reply_len++] = ERL_DRV_TUPLE;
-      reply[reply_len++] = 2;
-    } else {
-      reply[reply_len++] = ERL_DRV_ATOM;
-      reply[reply_len++] = driver_mk_atom("eof");
-    }
-
+    cdrv_send_active(context->erl_port, "subproc_error", reply,
+                     sizeof(reply) / sizeof(reply[0]), 1);
     cdrv_stop_reading(context);
     cdrv_close_fd(context, FDR);
   }
-
-  if (was_recv)
-    cdrv_send_data(context->erl_port, context->read_reply_to, reply, reply_len);
-  else
-    cdrv_send_active(context->erl_port, reply, reply_len);
 }
 
 // }}}
@@ -688,15 +694,17 @@ void cdrv_close_fd(struct subproc_context *context, unsigned int fds)
 // message sending helpers {{{
 
 static
-int cdrv_send_active(ErlDrvPort port, ErlDrvTermData *data, size_t len)
+int cdrv_send_active(ErlDrvPort port, char *reply_tag,
+                     ErlDrvTermData *data, size_t len, size_t tuple_len)
 {
   ErlDrvTermData reply[128] = {
-    ERL_DRV_ATOM, driver_mk_atom("subproc"),
+    ERL_DRV_ATOM, driver_mk_atom(reply_tag),
     ERL_DRV_PORT, driver_mk_port(port)
   };
-  memcpy(reply + 4, data, sizeof(ErlDrvTermData) * len);
+  if (len > 0)
+    memcpy(reply + 4, data, sizeof(ErlDrvTermData) * len);
   reply[4 + len] = ERL_DRV_TUPLE;
-  reply[5 + len] = 3;
+  reply[5 + len] = tuple_len + 2;
   return driver_send_term(port, driver_connected(port), reply, 6 + len);
 }
 

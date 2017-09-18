@@ -42,7 +42,7 @@
 %% `{packet,raw}' and `{packet,0}' are synonymous, with `raw' being the
 %% canonical value.
 
--type message() :: {subproc, Port :: handle(), Data :: binary() | list()}
+-type message() :: {subproc, Port :: handle(), Data :: binary() | string()}
                  | {subproc_closed, Port :: handle()}
                  | {subproc_error, Port :: handle(), Reason :: term()}
                  | {subproc_exit, Port :: handle(), subproc_unix:exit_code()}
