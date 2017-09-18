@@ -1,0 +1,10 @@
+{application, rsyncd, [
+  {description, ""},
+  {vsn, "0.0.0"},
+  {registered, []},
+  {applications, [kernel, stdlib, subproc]},
+  {modules, []},
+  {mod, {rsyncd_app, []}},
+  {env, [
+  ]}
+]}.

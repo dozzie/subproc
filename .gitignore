@@ -1,0 +1,11 @@
+.*.swp
+*.beam
+*.plt
+rsyncd.d
+/.erlang.mk
+/ebin/*.app
+/doc/edoc-info
+/doc/*.png
+/doc/*.html
+/doc/*.css
+/priv/rsyncd.conf
