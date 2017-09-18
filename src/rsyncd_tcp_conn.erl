@@ -89,17 +89,35 @@ init([Socket] = _Args) ->
     {local_address, {str, format_address(LocalAddr, LocalPort)}}
   ]),
   rsyncd_log:info("new connection"),
-  State = #state{
-    socket = Socket
-  },
-  {ok, State}.
+  {RsyncPath, ConfigPath, Cwd} = rsync_config(),
+  case rsync_exec(RsyncPath, ConfigPath, Cwd) of
+    {ok, Subproc} ->
+      State = #state{
+        socket = Socket,
+        rsyncd = Subproc
+      },
+      {ok, State};
+    {error, Reason} ->
+      CwdLog = case Cwd of
+        undefined -> [];
+        _ -> [{cwd, {str, Cwd}}]
+      end,
+      rsyncd_log:warn("rsync spawn error", [
+        {error, {term, Reason}},
+        {rsync, {str, RsyncPath}},
+        {config, {str, ConfigPath}} |
+        CwdLog
+      ]),
+      {stop, Reason}
+  end.
 
 %% @private
 %% @doc Clean up after event handler.
 
 terminate(_Arg, _State = #state{socket = Socket, rsyncd = Subproc}) ->
   gen_tcp:close(Socket),
-  % TODO: terminate `Subproc'
+  subproc_worker_driver:close(Subproc, read_write),
+  % TODO: wait for the process to terminate
   ok.
 
 %% }}}
@@ -123,10 +141,37 @@ handle_cast(_Request, State) ->
 %% @private
 %% @doc Handle incoming messages.
 
-handle_info({tcp, Socket, _Data} = _Message,
-            State = #state{socket = Socket}) ->
-  % TODO: don't stop
+handle_info({subproc, Subproc, Data} = _Message,
+            State = #state{socket = Socket, rsyncd = Subproc}) ->
+  gen_tcp:send(Socket, Data),
+  subproc_worker_driver:setopts(Subproc, [{active, once}]),
+  {noreply, State};
+
+handle_info({subproc_closed, Subproc} = _Message,
+            State = #state{rsyncd = Subproc}) ->
+  % TODO: this comes before exit or signal message, don't stop just yet
   {stop, normal, State};
+
+handle_info({subproc_error, Subproc, _Reason} = _Message,
+            State = #state{rsyncd = Subproc}) ->
+  % TODO: log this
+  {stop, normal, State};
+
+handle_info({subproc_exit, Subproc, _ExitCode} = _Message,
+            State = #state{rsyncd = Subproc}) ->
+  % TODO: log this if `ExitCode' is non-zero
+  {stop, normal, State};
+
+handle_info({subproc_signal, Subproc, {_SigNum, _SigName}} = _Message,
+            State = #state{rsyncd = Subproc}) ->
+  % TODO: log this
+  {stop, normal, State};
+
+handle_info({tcp, Socket, Data} = _Message,
+            State = #state{socket = Socket, rsyncd = Subproc}) ->
+  subproc_worker_driver:send(Subproc, Data),
+  inet:setopts(Socket, [{active, once}]),
+  {noreply, State};
 
 handle_info({tcp_closed, Socket} = _Message,
             State = #state{socket = Socket}) ->
@@ -134,6 +179,7 @@ handle_info({tcp_closed, Socket} = _Message,
 
 handle_info({tcp_error, Socket, _Reason} = _Message,
             State = #state{socket = Socket}) ->
+  % TODO: log this
   {stop, normal, State};
 
 %% unknown messages
@@ -171,6 +217,29 @@ format_address({A,B,C,D} = _Address, Port) ->
     integer_to_list(D)
   ],
   string:join(OctetList, ".") ++ ":" ++ integer_to_list(Port).
+
+rsync_config() ->
+  {ok, ConfigPath} = application:get_env(rsyncd_conf),
+  {ok, RsyncPath} = application:get_env(rsync_path),
+  case application:get_env(cwd) of
+    {ok, Cwd} -> {RsyncPath, ConfigPath, Cwd};
+    undefined -> {RsyncPath, ConfigPath, undefined}
+  end.
+
+-spec rsync_exec(file:filename(), file:filename(),
+                 filename:filename() | undefined) ->
+  {ok, subproc:handle()} | {error, term()}.
+
+rsync_exec(RsyncPath, ConfigPath, Cwd) ->
+  RsyncArgs = ["--daemon", "--config", ConfigPath],
+  Options = [
+    {stdio, bidir}, {type, socket}, {termsig, hup},
+    binary, {packet, raw}, {active, once}
+  ],
+  case Cwd of
+    undefined -> subproc_master:exec(RsyncPath, RsyncArgs, Options);
+    _ -> subproc_master:exec(RsyncPath, RsyncArgs, [{cd, Cwd} | Options])
+  end.
 
 %%%---------------------------------------------------------------------------
 %%% vim:ft=erlang:foldmethod=marker
