@@ -42,6 +42,9 @@ app-c_src: export OUTDIR = $(CURDIR)/priv
 ifeq ($(PLATFORM),linux)
 app-c_src: export CPPFLAGS += -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700
 endif
+# pass down `-I' options for generating $(C_SRC_DIR)/deps.mk
+clean: export CFLAGS +=
+clean: export CPPFLAGS +=
 
 #-----------------------------------------------------------------------------
 

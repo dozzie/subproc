@@ -68,7 +68,7 @@ $(OUTDIR)/subproc_unix.so: $(SUBPROC_UNIX_OBJS)
 
 -include deps.mk
 deps.mk: $(SOURCES) $(HEADERS)
-	$(verbose) gcc -MM $(SOURCES) > $@
+	$(verbose) $(CC) -MM $(CFLAGS) $(CPPFLAGS) $(SOURCES) > $@
 
 #-----------------------------------------------------------------------------
 # auxiliary rules
