@@ -8,6 +8,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <sys/uio.h>
+#include <sys/socket.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <limits.h>
@@ -41,6 +42,17 @@
 // sending a `{error,closed}' tuple
 #define ERROR_CLOSED 0
 
+// argument for `cdrv_set_reading()' when receiver won't be used
+#define ERL_PID_DOESNT_MATTER ERL_DRV_NIL
+
+// argument for `cdrv_set_reading()'
+#define READ_RECV     1
+#define READ_ACTIVE   0
+
+// argument for `cdrv_close_fd()'; can be OR-ed
+#define FDR 0x01
+#define FDW 0x02
+
 // }}}
 //----------------------------------------------------------
 
@@ -66,6 +78,12 @@ static int cdrv_send_ok(ErlDrvPort port, ErlDrvTermData receiver);
 static int cdrv_send_data(ErlDrvPort port, ErlDrvTermData receiver, ErlDrvTermData *data, size_t len);
 static int cdrv_send_active(ErlDrvPort port, ErlDrvTermData *data, size_t len);
 static int cdrv_send_error(ErlDrvPort port, ErlDrvTermData receiver, int error);
+
+static void cdrv_close_fd(struct subproc_context *context, unsigned int fds);
+static void cdrv_interrupt_write(struct subproc_context *context, int error);
+static void cdrv_interrupt_read(struct subproc_context *context, int error);
+static int  cdrv_set_reading(struct subproc_context *context, ErlDrvTermData caller, int is_recv, int *error);
+static void cdrv_stop_reading(struct subproc_context *context);
 
 //----------------------------------------------------------
 // entry point definition {{{
@@ -148,21 +166,7 @@ void cdrv_stop(ErlDrvData drv_data)
 {
   struct subproc_context *context = (struct subproc_context *)drv_data;
 
-  if (context->fdin >= 0 && context->fdin == context->fdout) {
-    ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdin);
-    driver_select(context->erl_port, event,
-                  ERL_DRV_USE | ERL_DRV_READ | ERL_DRV_WRITE, 0);
-    context->fdin = context->fdout = -1;
-  }
-
-  if (context->fdin >= 0) {
-    ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdin);
-    driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 0);
-  }
-  if (context->fdout >= 0) {
-    ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdout);
-    driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_WRITE, 0);
-  }
+  cdrv_close_fd(context, FDR | FDW);
 
   driver_free(context);
 }
@@ -190,7 +194,7 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
   struct subproc_context *context = (struct subproc_context *)drv_data;
 
   if (command == 0) { // port initialization {{{
-    // initialization: setting file descriptors and maybe PID
+    // setting file descriptors and maybe PID
 
     if (context->fdin != -1 || context->fdout != -1) // FDs already set
       return -1;
@@ -223,7 +227,6 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
   } // }}}
 
   if (command == 1) { // setopts() {{{
-    // setopts()
 
     if (len != 7)
       return -1;
@@ -234,10 +237,15 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     if (read_mode > 3 || data_mode > 2 || packet_mode > 5)
       return -1;
 
-    if (read_mode != passive && context->read_mode == passive &&
-        context->reading) {
-      context->reading = 0;
-      cdrv_send_error(context->erl_port, context->read_reply_to, EINTR);
+    if (read_mode != passive && context->read_mode == passive) {
+      // change from passive to active mode
+      cdrv_interrupt_read(context, EINTR);
+      // NOTE: no need to stop reading, since the new mode is one of the
+      // active ones and it will be enabled back soon enough
+      //cdrv_stop_reading(context);
+    } else if (read_mode == passive && context->read_mode != passive) {
+      // change from active to passive mode
+      cdrv_stop_reading(context);
     }
 
     switch (read_mode) {
@@ -260,10 +268,10 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       default: break; // 0, no change
     }
 
-    if ((context->read_mode == active || context->read_mode == once) &&
-        context->fdin >= 0) {
-      ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdin);
-      driver_select(context->erl_port, event, ERL_DRV_READ, 1);
+    if (context->read_mode != passive) {
+      // one of the active modes
+      // NOTE: the only error possible here is when `fdin' is invalid
+      cdrv_set_reading(context, ERL_PID_DOESNT_MATTER, READ_ACTIVE, NULL);
     }
 
     size_t new_size = unpack32((unsigned char *)(buf + 3));
@@ -278,7 +286,6 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
   } // }}}
 
   if (command == 2) { // getopts() {{{
-    // getopts()
 
     // this should never be called
     if (11 > rlen) *rbuf = driver_alloc(11);
@@ -311,37 +318,27 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
   } // }}}
 
   if (command == 3) { // close(read|write|read_write) {{{
-    // close FD(s)
 
     if (len != 1 || buf[0] < 1 || buf[0] > 3)
       return -1;
 
-    if ((buf[0] == 1 || buf[0] == 3) && context->fdin >= 0) {
-      ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdin);
-      driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 0);
-      context->fdin = -1;
-
-      if (context->read_mode == passive && context->reading) {
-        context->reading = 0;
-        cdrv_send_error(context->erl_port, context->read_reply_to,
-                        ERROR_CLOSED);
-      }
-    }
-    if ((buf[0] == 2 || buf[0] == 3) && context->fdout >= 0) {
-      ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdout);
-      driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_WRITE, 0);
-      context->fdout = -1;
-
-      ErlDrvSizeT queued_bytes = driver_sizeq(context->erl_port);
-      if (queued_bytes > 0) {
-        // NOTE: `send()' blocks until the write queue gets empty, so if this
-        // operation is called from the same process as `send()' (typically
-        // the port owner), the queue should already be empty
-        driver_deq(context->erl_port, queued_bytes);
-
-        cdrv_send_error(context->erl_port, context->write_reply_to,
-                        ERROR_CLOSED);
-      }
+    switch (buf[0]) {
+      case 1:
+        cdrv_interrupt_read(context, ERROR_CLOSED);
+        cdrv_close_fd(context, FDR);
+      break;
+      case 2:
+        cdrv_interrupt_write(context, ERROR_CLOSED);
+        cdrv_close_fd(context, FDW);
+      break;
+      case 3:
+        cdrv_interrupt_read(context, ERROR_CLOSED);
+        cdrv_interrupt_write(context, ERROR_CLOSED);
+        cdrv_close_fd(context, FDR | FDW);
+      break;
+      default:
+        // never happens
+        return -1;
     }
 
     return 0;
@@ -349,28 +346,13 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
 
   if (command == 4) { // recv() {{{
     // recv(): errors are signaled by sending a message
-    if (context->fdin == -1) {
-      cdrv_send_error(context->erl_port, driver_caller(context->erl_port),
-                      ERROR_CLOSED);
-      return 0;
-    }
 
-    if (context->read_mode != passive) {
-      cdrv_send_error(context->erl_port, driver_caller(context->erl_port),
-                      EINVAL);
-      return 0;
-    }
+    ErlDrvTermData caller = driver_caller(context->erl_port);
+    int error;
+    if (cdrv_set_reading(context, caller, READ_RECV, &error) != 0)
+      cdrv_send_error(context->erl_port, caller, error);
+    // on success, `cdrv_ready_input()' sends a reply
 
-    if (context->reading) {
-      cdrv_send_error(context->erl_port, driver_caller(context->erl_port),
-                      EALREADY);
-      return 0;
-    }
-
-    context->reading = 1;
-    context->read_reply_to = driver_caller(context->erl_port);
-    ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdin);
-    driver_select(context->erl_port, event, ERL_DRV_READ, 1);
     return 0;
   } // }}}
 
@@ -387,9 +369,10 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
          driver_caller(context->erl_port) != context->read_reply_to))
       return -1;
 
-    context->reading = 0;
-    ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdin);
-    driver_select(context->erl_port, event, ERL_DRV_READ, 0);
+    // since it's called from the same process that started the recv() call,
+    // we don't need to send any "call interrupted" messages
+    cdrv_stop_reading(context);
+
     return 0;
   } // }}}
 
@@ -438,9 +421,8 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
     reply[reply_len++] = 2;
 
     if (context->read_mode != active) { // once | passive
-      driver_select(context->erl_port, event, ERL_DRV_READ, 0);
+      cdrv_stop_reading(context);
       context->read_mode = passive;
-      context->reading = 0;
     }
   } else { // eof | {error, Reason :: atom()}
     if (result <= 0) {
@@ -459,9 +441,8 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
       reply[reply_len++] = driver_mk_atom("eof");
     }
 
-    driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 0);
-    context->reading = 0;
-    context->fdin = -1;
+    cdrv_stop_reading(context);
+    cdrv_close_fd(context, FDR);
   }
 
   if (was_recv)
@@ -505,11 +486,8 @@ void cdrv_ready_output(ErlDrvData drv_data, ErlDrvEvent event)
   } else {
     // write error
     cdrv_send_error(context->erl_port, context->write_reply_to, errno);
-    driver_deq(context->erl_port, driver_sizeq(context->erl_port));
-    ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdout);
-    driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_WRITE, 0);
+    cdrv_close_fd(context, FDW);
     set_busy_port(context->erl_port, 0);
-    context->fdout = -1;
   }
 }
 
@@ -522,9 +500,10 @@ void cdrv_outputv(ErlDrvData drv_data, ErlIOVec *ev)
 {
   struct subproc_context *context = (struct subproc_context *)drv_data;
 
+  ErlDrvTermData caller = driver_caller(context->erl_port);
+
   if (context->fdout < 0) {
-    cdrv_send_error(context->erl_port, driver_caller(context->erl_port),
-                    ERROR_CLOSED);
+    cdrv_send_error(context->erl_port, caller, ERROR_CLOSED);
     return;
   }
 
@@ -548,28 +527,24 @@ void cdrv_outputv(ErlDrvData drv_data, ErlIOVec *ev)
   ssize_t result = writev(context->fdout, (struct iovec *)iov, iov_len);
 
   if (result == ev->size) {
-    cdrv_send_ok(context->erl_port, driver_caller(context->erl_port));
+    cdrv_send_ok(context->erl_port, caller);
   } else if ((result >= 0 && result < ev->size) ||
              (result <  0 && (errno == EWOULDBLOCK || errno == EAGAIN))) {
     // partial write() (possibly the written part is zero)
 
     // NOTE: sending ACK/NAK is delayed until the queue is flushed
-    context->write_reply_to = driver_caller(context->erl_port);
+    context->write_reply_to = caller;
 
     // TODO: build ErlIOVec when iov != ev->iov
     driver_enqv(context->erl_port, ev, (result > 0) ? result : 0);
+
     ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdout);
     driver_select(context->erl_port, event, ERL_DRV_WRITE, 1);
     set_busy_port(context->erl_port, 1);
   } else {
     // write error
-    cdrv_send_error(context->erl_port, driver_caller(context->erl_port),
-                    errno);
-
-    // NOTE: the write queue should be empty here
-    ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdout);
-    driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_WRITE, 0);
-    context->fdout = -1;
+    cdrv_send_error(context->erl_port, caller, errno);
+    cdrv_close_fd(context, FDW);
   }
 }
 
@@ -587,15 +562,128 @@ void cdrv_flush(ErlDrvData drv_data)
     // well, this callback wouldn't be called if queued_bytes == 0
     return;
 
+  cdrv_interrupt_write(context, ERROR_CLOSED);
   driver_deq(context->erl_port, queued_bytes);
-
-  cdrv_send_error(context->erl_port, context->write_reply_to,
-                  ERROR_CLOSED);
 }
 
 // }}}
 //----------------------------------------------------------
 
+//----------------------------------------------------------------------------
+// port state and descriptor helpers {{{
+
+static
+int cdrv_set_reading(struct subproc_context *context, ErlDrvTermData caller,
+                     int is_recv, int *error)
+{
+  if (context->fdin < 0) {
+    if (error != NULL)
+      *error = ERROR_CLOSED;
+    return -1;
+  }
+
+  if ((is_recv && context->read_mode != passive) ||
+      (!is_recv && context->read_mode == passive)) {
+    if (error != NULL)
+      *error = EINVAL;
+    return -1;
+  }
+
+  if (context->read_mode == passive && context->reading) {
+    if (error != NULL)
+      *error = EALREADY;
+    return -1;
+  }
+
+  if (is_recv) {
+    context->reading = 1;
+    context->read_reply_to = caller;
+  }
+
+  ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdin);
+  driver_select(context->erl_port, event, ERL_DRV_READ, 1);
+
+  return 0;
+}
+
+static
+void cdrv_stop_reading(struct subproc_context *context)
+{
+  context->reading = 0;
+  ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdin);
+  driver_select(context->erl_port, event, ERL_DRV_READ, 0);
+}
+
+static
+void cdrv_interrupt_read(struct subproc_context *context, int error)
+{
+  if (context->read_mode != passive || !context->reading)
+    return;
+
+  context->reading = 0;
+  cdrv_send_error(context->erl_port, context->read_reply_to, error);
+}
+
+static
+void cdrv_interrupt_write(struct subproc_context *context, int error)
+{
+  if (driver_sizeq(context->erl_port) > 0)
+    cdrv_send_error(context->erl_port, context->write_reply_to, error);
+}
+
+static
+void cdrv_close_fd(struct subproc_context *context, unsigned int fds)
+{
+  ErlDrvEvent event;
+
+  ErlDrvSizeT queued_bytes;
+  if ((fds & FDW) == FDW &&
+      (queued_bytes = driver_sizeq(context->erl_port)) > 0) {
+    driver_deq(context->erl_port, queued_bytes);
+    set_busy_port(context->erl_port, 0);
+  }
+
+  if (context->fdin >= 0 && context->fdin == context->fdout) {
+    // bidirectional STDIO (socketpair(); pipe() only guarantees
+    // unidirectional pipes)
+
+    event = (ErlDrvEvent)((long int)context->fdin);
+
+    if ((fds & (FDR | FDW)) == (FDR | FDW)) {
+      // close the descriptor altogether
+      driver_select(context->erl_port, event,
+                    ERL_DRV_USE | ERL_DRV_READ | ERL_DRV_WRITE, 0);
+      context->fdin = -1;
+      context->fdout = -1;
+    } else if ((fds & FDR) != 0) {
+      driver_select(context->erl_port, event, ERL_DRV_READ, 0);
+      shutdown(context->fdin, SHUT_RD);
+      context->fdin = -1;
+    } else { // (fds & FDW) != 0
+      driver_select(context->erl_port, event, ERL_DRV_WRITE, 0);
+      //set_busy_port(context->erl_port, 0); // already called
+      shutdown(context->fdout, SHUT_WR);
+      context->fdout = -1;
+    }
+  } else {
+    // unidirectional, separate descriptors or an already half-closed
+    // bidirectional STDIO
+    if ((fds & FDR) != 0 && context->fdin >= 0) {
+      event = (ErlDrvEvent)((long int)context->fdin);
+      driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 0);
+      context->fdin = -1;
+    }
+
+    if ((fds & FDW) != 0 && context->fdout >= 0) {
+      event = (ErlDrvEvent)((long int)context->fdout);
+      driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_WRITE, 0);
+      //set_busy_port(context->erl_port, 0); // already called
+      context->fdout = -1;
+    }
+  }
+}
+
+// }}}
 //----------------------------------------------------------------------------
 // message sending helpers {{{
 
