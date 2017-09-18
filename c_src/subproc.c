@@ -37,6 +37,10 @@
 #define DEFAULT_BUFFER_SIZE (((4 * PIPE_BUF) > 4096) ? 4 * PIPE_BUF : 4096)
 #define MAX_BUFFER_SIZE (64 * 1024 * 1024) // 64MB (gen_tcp uses the same max)
 
+// zero errno value will never occur in the wild, so it can be used to request
+// sending a `{error,closed}' tuple
+#define ERROR_CLOSED 0
+
 // }}}
 //----------------------------------------------------------
 
@@ -319,13 +323,8 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
 
       if (context->read_mode == passive && context->reading) {
         context->reading = 0;
-        ErlDrvTermData data[] = {
-          ERL_DRV_ATOM, driver_mk_atom("error"),
-          ERL_DRV_ATOM, driver_mk_atom("closed"),
-          ERL_DRV_TUPLE, 2
-        };
-        cdrv_send_data(context->erl_port, context->read_reply_to,
-                       data, sizeof(data) / sizeof(data[0]));
+        cdrv_send_error(context->erl_port, context->read_reply_to,
+                        ERROR_CLOSED);
       }
     }
     if ((buf[0] == 2 || buf[0] == 3) && context->fdout >= 0) {
@@ -340,13 +339,8 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
         // the port owner), the queue should already be empty
         driver_deq(context->erl_port, queued_bytes);
 
-        ErlDrvTermData data[] = {
-          ERL_DRV_ATOM, driver_mk_atom("error"),
-          ERL_DRV_ATOM, driver_mk_atom("closed"),
-          ERL_DRV_TUPLE, 2
-        };
-        cdrv_send_data(context->erl_port, context->write_reply_to,
-                       data, sizeof(data) / sizeof(data[0]));
+        cdrv_send_error(context->erl_port, context->write_reply_to,
+                        ERROR_CLOSED);
       }
     }
 
@@ -356,13 +350,8 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
   if (command == 4) { // recv() {{{
     // recv(): errors are signaled by sending a message
     if (context->fdin == -1) {
-      ErlDrvTermData data[] = {
-        ERL_DRV_ATOM, driver_mk_atom("error"),
-        ERL_DRV_ATOM, driver_mk_atom("closed"),
-        ERL_DRV_TUPLE, 2
-      };
-      cdrv_send_data(context->erl_port, driver_caller(context->erl_port),
-                     data, sizeof(data) / sizeof(data[0]));
+      cdrv_send_error(context->erl_port, driver_caller(context->erl_port),
+                      ERROR_CLOSED);
       return 0;
     }
 
@@ -534,13 +523,8 @@ void cdrv_outputv(ErlDrvData drv_data, ErlIOVec *ev)
   struct subproc_context *context = (struct subproc_context *)drv_data;
 
   if (context->fdout < 0) {
-    ErlDrvTermData data[] = {
-      ERL_DRV_ATOM, driver_mk_atom("error"),
-      ERL_DRV_ATOM, driver_mk_atom("closed"),
-      ERL_DRV_TUPLE, 2
-    };
-    cdrv_send_data(context->erl_port, driver_caller(context->erl_port),
-                   data, sizeof(data) / sizeof(data[0]));
+    cdrv_send_error(context->erl_port, driver_caller(context->erl_port),
+                    ERROR_CLOSED);
     return;
   }
 
@@ -605,13 +589,8 @@ void cdrv_flush(ErlDrvData drv_data)
 
   driver_deq(context->erl_port, queued_bytes);
 
-  ErlDrvTermData data[] = {
-    ERL_DRV_ATOM, driver_mk_atom("error"),
-    ERL_DRV_ATOM, driver_mk_atom("closed"),
-    ERL_DRV_TUPLE, 2
-  };
-  cdrv_send_data(context->erl_port, context->write_reply_to,
-                 data, sizeof(data) / sizeof(data[0]));
+  cdrv_send_error(context->erl_port, context->write_reply_to,
+                  ERROR_CLOSED);
 }
 
 // }}}
@@ -663,12 +642,18 @@ int cdrv_send_ok(ErlDrvPort port, ErlDrvTermData receiver)
 static
 int cdrv_send_error(ErlDrvPort port, ErlDrvTermData receiver, int error)
 {
+  char *error_atom;
+  if (error == ERROR_CLOSED)
+    error_atom = "closed";
+  else
+    error_atom = erl_errno_id(error);
+
   ErlDrvTermData reply[] = {
     ERL_DRV_ATOM, driver_mk_atom("subproc_reply"),
     ERL_DRV_PORT, driver_mk_port(port),
-    ERL_DRV_ATOM, driver_mk_atom("error"),
-    ERL_DRV_ATOM, driver_mk_atom(erl_errno_id(error)),
-    ERL_DRV_TUPLE, 2,
+      ERL_DRV_ATOM, driver_mk_atom("error"),
+      ERL_DRV_ATOM, driver_mk_atom(error_atom),
+      ERL_DRV_TUPLE, 2,
     ERL_DRV_TUPLE, 3
   };
   return driver_send_term(port, receiver,
