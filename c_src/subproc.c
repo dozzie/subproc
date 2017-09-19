@@ -36,8 +36,13 @@
 
 #define PORT_DRIVER_NAME_LEN (sizeof(PORT_DRIVER_NAME) - 1)
 
+// default size for reading buffers
 #define DEFAULT_BUFFER_SIZE (((4 * PIPE_BUF) > 4096) ? 4 * PIPE_BUF : 4096)
-#define MAX_BUFFER_SIZE (64 * 1024 * 1024) // 64MB (gen_tcp uses the same max)
+#define MAX_PACKET_SIZE (64 * 1024 * 1024) // 64MB (gen_tcp uses the same max)
+
+// payload of packets of this size and larger will be read to
+// subproc_context.packet instead of subproc_context.buffer
+#define BIG_PACKET_SIZE 256
 
 // zero errno value will never occur in the wild, so it can be used to request
 // sending a `{error,closed}' tuple
@@ -65,8 +70,11 @@ struct subproc_context {
   enum { passive, active, once } read_mode;
   enum { string, binary } data_mode;
   enum { raw, pfx1, pfx2, pfx4, line } packet_mode;
+  size_t packet_size;
   size_t buffer_used;
   ErlDrvBinary *buffer;
+  size_t packet_used;   // used for reading large packets
+  ErlDrvBinary *packet; // used for reading large packets
   int fdin;
   int fdout;
   pid_t pid;
@@ -148,8 +156,11 @@ ErlDrvData cdrv_start(ErlDrvPort port, char *cmd)
   context->read_mode = passive;
   context->data_mode = string;
   context->packet_mode = raw;
+  context->packet_size = 0;
   context->buffer_used = 0;
   context->buffer = NULL;
+  context->packet_used = 0;
+  context->packet = NULL;
   context->erl_port = port;
 
   // port_control() should return binaries
@@ -168,6 +179,10 @@ void cdrv_stop(ErlDrvData drv_data)
   struct subproc_context *context = (struct subproc_context *)drv_data;
 
   cdrv_close_fd(context, FDR | FDW);
+  if (context->buffer != NULL)
+    driver_free_binary(context->buffer);
+  if (context->packet != NULL)
+    driver_free_binary(context->packet);
 
   driver_free(context);
 }
@@ -346,9 +361,21 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
   } // }}}
 
   if (command == 4) { // recv() {{{
-    // recv(): errors are signaled by sending a message
+    // recv(): request errors are signaled by sending a message
+
+    if (len != 4) // invalid request qualifies to an exception, not a reply
+      return -1;
 
     ErlDrvTermData caller = driver_caller(context->erl_port);
+
+    uint32_t read_size = unpack32((unsigned char *)buf);
+    if (read_size != 0 && context->packet_mode != raw) {
+      // reading a specific number of bytes only allowed for raw packet mode
+      cdrv_send_error(context->erl_port, caller, EINVAL);
+      return 0;
+    }
+    context->packet_size = read_size;
+
     int error;
     if (cdrv_set_reading(context, caller, READ_RECV, &error) != 0)
       cdrv_send_error(context->erl_port, caller, error);
@@ -386,33 +413,328 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
 //----------------------------------------------------------
 // Erlang input on select descriptor {{{
 
+// NOTE: on EOF (len == 0) and error (len < 0), reading descriptor is closed
+// and read buffers are freed
+static void cdrv_send_input(struct subproc_context *context,
+                            void *data, ssize_t len, int error);
+// NOTE: this function assumes that read was successful and the whole binary
+// is to be sent; caller should also call `driver_free_binary(data)'
+static void cdrv_send_binary(struct subproc_context *context,
+                             ErlDrvBinary *data);
+
 static
 void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
 {
   struct subproc_context *context = (struct subproc_context *)drv_data;
   // `event' is fdin descriptor
 
-  // TODO: use `context->buffer'
-  // TODO: honour `context->packet_mode'
-  char buffer[DEFAULT_BUFFER_SIZE];
-  ssize_t result = read((long int)event, buffer, sizeof(buffer));
+  // NOTE: after reading full packet or encountering an EOF or an error, this
+  // function leaves context->buffer_used and context->packet_size set to zero
+  // if context->buffer_used is not zero, it means that decoding a packet is
+  // in progress
 
-  // this should not be necessary, but it does no harm
-  if (result < 0 && (errno == EWOULDBLOCK || errno == EAGAIN))
+  if (context->packet_mode == raw && context->packet_size == 0) { // {{{
+    // XXX: assume context->buffer_used == 0
+
+    if (context->buffer == NULL) {
+      context->buffer = driver_alloc_binary(DEFAULT_BUFFER_SIZE);
+    } else if (context->buffer->orig_size < DEFAULT_BUFFER_SIZE) {
+      driver_free_binary(context->buffer);
+      context->buffer = driver_alloc_binary(DEFAULT_BUFFER_SIZE);
+    }
+    if (context->buffer == NULL)
+      driver_failure_posix(context->erl_port, ENOMEM);
+
+    ssize_t result = read((long int)event, context->buffer->orig_bytes,
+                          context->buffer->orig_size);
+
+    cdrv_send_input(context, context->buffer->orig_bytes, result, errno);
+    context->buffer_used = 0;
+    //context->packet_size = 0; // this was zero and wasn't changed
+
+    return;
+  } // }}}
+
+  if (context->packet_mode == raw && context->packet_size > 0) { // {{{
+    if (context->buffer == NULL) {
+      context->buffer = driver_alloc_binary(context->packet_size);
+    } else if (context->buffer->orig_size < context->packet_size) {
+      if (context->buffer_used == 0) {
+        driver_free_binary(context->buffer);
+        context->buffer = driver_alloc_binary(context->packet_size);
+      } else {
+        context->buffer = driver_realloc_binary(context->buffer,
+                                                context->packet_size);
+      }
+    }
+    if (context->buffer == NULL)
+      driver_failure_posix(context->erl_port, ENOMEM);
+
+    ssize_t result = read((long int)event, context->buffer->orig_bytes,
+                          context->packet_size - context->buffer_used);
+
+    if (result > 0)
+      context->buffer_used += result;
+
+    if (context->buffer_used == context->packet_size) {
+      // full packet was read
+      cdrv_send_input(context, context->buffer->orig_bytes,
+                      context->packet_size, 0);
+      context->buffer_used = 0;
+      context->packet_size = 0;
+    } else if (result > 0) {
+      // incomplete but successful read, do nothing and wait for more data
+    } else { // EOF or read error
+      cdrv_send_input(context, NULL, result, errno);
+      // buffer_used and packet_size are reset by closing the input descriptor
+    }
+
+    return;
+  } // }}}
+
+  if (context->packet_mode == pfx1 || context->packet_mode == pfx2 ||
+      context->packet_mode == pfx4) { // {{{
+    size_t hlen;
+    switch (context->packet_mode) {
+      case pfx1: hlen = 1; break;
+      case pfx2: hlen = 2; break;
+      case pfx4: hlen = 4; break;
+      default: /* never happens */ break;
+    }
+
+    // get buffer big enough to hold the largest small packet plus 4 bytes
+    // (for the largest header with packet size)
+    if (context->buffer == NULL) {
+      context->buffer = driver_alloc_binary(BIG_PACKET_SIZE + 4);
+    } else if (context->buffer->orig_size < BIG_PACKET_SIZE + 4) {
+      // BIG_PACKET_SIZE is small enough for me not to worry about speed of
+      // preserving an unnecessary data; just reallocate the buffer
+      context->buffer =
+        driver_realloc_binary(context->buffer, BIG_PACKET_SIZE + 4);
+    }
+    if (context->buffer == NULL)
+      driver_failure_posix(context->erl_port, ENOMEM);
+
+    // read the header
+    if (context->buffer_used < hlen) {
+      ssize_t result = read((long int)event, context->buffer->orig_bytes,
+                            hlen - context->buffer_used);
+
+      if (result < 0 || (result == 0 && context->buffer_used == 0)) {
+        // EOF at packet boundary or read error
+        cdrv_send_input(context, NULL, result, errno);
+        // buffer_used and packet_size are reset by closing the input
+        // descriptor
+        return;
+      } else if (result == 0 && context->buffer_used > 0) {
+        // EOF in the middle of a packet header
+        cdrv_send_input(context, NULL, -1, ERROR_CLOSED);
+        // buffer_used and packet_size are reset by closing the input
+        // descriptor
+        return;
+      }
+
+      // result > 0
+
+      if ((context->buffer_used += result) < hlen)
+        // wait for more data to read
+        return;
+
+      // full header was read
+
+      switch (context->packet_mode) {
+        case pfx1:
+          context->packet_size = (uint8_t)(context->buffer->orig_bytes[0]);
+        break;
+        case pfx2:
+          context->packet_size =
+            unpack16((unsigned char*)context->buffer->orig_bytes);
+        break;
+        case pfx4:
+          context->packet_size =
+            unpack32((unsigned char*)context->buffer->orig_bytes);
+        break;
+        default:
+          // never happens
+        break;
+      }
+
+      // TODO: honour requested maximum packet size
+      if (context->packet_size > MAX_PACKET_SIZE)
+        driver_failure_posix(context->erl_port, EMSGSIZE);
+
+      context->packet_used = 0;
+      if (context->packet_size >= BIG_PACKET_SIZE) {
+        if (context->packet != NULL)
+          driver_free_binary(context->packet);
+        context->packet = driver_alloc_binary(context->packet_size);
+      }
+      if (context->packet == NULL)
+        driver_failure_posix(context->erl_port, ENOMEM);
+    }
+
+    char *read_at;
+    size_t read_size;
+    if (context->packet_size < BIG_PACKET_SIZE) {
+      // small packet, read into context->buffer directly
+      read_at = context->buffer->orig_bytes + context->buffer_used;
+      read_size = context->packet_size - context->buffer_used;
+    } else {
+      // big packet, read into context->packet (it's already not NULL and
+      // large enough)
+      read_at = context->packet->orig_bytes + context->packet_used;
+      read_size = context->packet_size - context->packet_used;
+    }
+
+    ssize_t result = read((long int)event, read_at, read_size);
+    if (result < 0) {
+      // read error
+      cdrv_send_input(context, NULL, result, errno);
+      // buffer_used and packet_size are reset by closing the input descriptor
+    } else if (result == 0) {
+      // EOF in the middle of packet's payload
+      cdrv_send_input(context, NULL, -1, ERROR_CLOSED);
+      // buffer_used and packet_size are reset by closing the input descriptor
+    } else if (result < read_size /* && result > 0 */) {
+      // incomplete read; update the read counter now, wait for more data
+      if (context->packet_size < BIG_PACKET_SIZE)
+        context->buffer_used += result;
+      else
+        context->packet_used += result;
+    } else if (context->packet_size < BIG_PACKET_SIZE) {
+      // full packet, a small one (context->packet was not used)
+      cdrv_send_input(context, context->buffer->orig_bytes + hlen,
+                      context->packet_size, 0);
+      context->buffer_used = 0;
+      context->packet_size = 0;
+    } else if (context->data_mode == string) {
+      // full packet, a big one, but we're sending strings
+      cdrv_send_input(context, context->packet->orig_bytes,
+                      context->packet_size, 0);
+      context->buffer_used = 0;
+      context->packet_used = 0;
+      context->packet_size = 0;
+    } else {
+      // full packet, a big one, and we're sending binaries
+      cdrv_send_binary(context, context->packet);
+      driver_free_binary(context->packet);
+      context->packet = NULL;
+      context->buffer_used = 0;
+      context->packet_used = 0;
+      context->packet_size = 0;
+    }
+
+    return;
+  } // }}}
+
+  if (context->packet_mode == line) { // {{{ FIXME: this mode is broken
+    if (context->buffer == NULL) {
+      context->buffer = driver_alloc_binary(DEFAULT_BUFFER_SIZE);
+    } else if (context->buffer_used == 0 &&
+               context->buffer->orig_size < DEFAULT_BUFFER_SIZE) {
+      driver_free_binary(context->buffer);
+      context->buffer = driver_alloc_binary(DEFAULT_BUFFER_SIZE);
+    } else if (context->buffer->orig_size - context->buffer_used < DEFAULT_BUFFER_SIZE) {
+      // TODO: honour requested maximum packet size
+      context->buffer = driver_realloc_binary(context->buffer,
+                                              context->buffer_used + DEFAULT_BUFFER_SIZE);
+    }
+    if (context->buffer == NULL)
+      driver_failure_posix(context->erl_port, ENOMEM);
+
+    char *read_at = context->buffer->orig_bytes + context->buffer_used;
+    size_t read_max_size = context->buffer->orig_size - context->buffer_used;
+
+    ssize_t result = read((long int)event, read_at, read_max_size);
+
+    if (result <= 0) { // EOF or read error
+      cdrv_send_input(context, NULL, result, errno);
+      // buffer_used and packet_size are reset by closing the input descriptor
+      return;
+    }
+
+    context->buffer_used += result;
+    char *sol = context->buffer->orig_bytes;
+    char *eol;
+
+    // XXX: assume that read buffer didn't have EOL character previously
+    // FIXME: this is not true for passive and {active,once} modes
+    if ((eol = memchr(read_at, '\n', result)) != NULL) {
+      cdrv_send_input(context, sol, eol - sol + 1, 0);
+
+      size_t consumed = eol - sol + 1;
+
+      if (context->read_mode != active) {
+        // FIXME: this is very expensive to do on every read
+        memmove(context->buffer->orig_bytes, eol + 1,
+                context->buffer_used - consumed);
+        return;
+      }
+
+      sol = eol + 1;
+      while (consumed < context->buffer_used &&
+             (eol = memchr(sol, '\n', context->buffer_used - consumed)) != NULL) {
+        cdrv_send_input(context, sol, eol - sol + 1, 0);
+        consumed += eol - sol + 1;
+        sol = eol + 1;
+      }
+
+      context->buffer_used -= consumed;
+    }
+
+    return;
+  } // }}}
+
+  // XXX: never reached
+}
+
+static void cdrv_send_binary(struct subproc_context *context,
+                             ErlDrvBinary *data)
+{
+  if (context->read_mode == passive) {
+    ErlDrvTermData reply[] = {
+      ERL_DRV_ATOM, driver_mk_atom("ok"),
+      ERL_DRV_BINARY, (ErlDrvTermData)data, data->orig_size, 0,
+      ERL_DRV_TUPLE, 2
+    };
+    cdrv_send_data(context->erl_port, context->read_reply_to,
+                   reply, sizeof(reply) / sizeof(reply[0]));
+    cdrv_stop_reading(context);
+  } else { // active | once
+    ErlDrvTermData reply[] = {
+      ERL_DRV_BINARY, (ErlDrvTermData)data, data->orig_size, 0
+    };
+
+    cdrv_send_active(context->erl_port, "subproc", reply,
+                     sizeof(reply) / sizeof(reply[0]), 1);
+
+    if (context->read_mode == once) {
+      cdrv_stop_reading(context);
+      context->read_mode = passive;
+    }
+  }
+}
+
+static void cdrv_send_input(struct subproc_context *context,
+                            void *data, ssize_t len, int error)
+{
+  // this should not be necessary (cdrv_ready_input() has some FD event
+  // ready), but there's no harm to check it
+  if (len < 0 && (error == EWOULDBLOCK || error == EAGAIN))
     return;
 
   if (context->read_mode == passive) {
-    if (result > 0) { // {ok, Data :: string() | binary()}
+    if (len > 0) { // {ok, Data :: string() | binary()}
       ErlDrvTermData reply[] = {
         ERL_DRV_ATOM, driver_mk_atom("ok"),
         ((context->data_mode == string) ? ERL_DRV_STRING : ERL_DRV_BUF2BINARY),
-          (ErlDrvTermData)(buffer), (ErlDrvTermData)result,
+          (ErlDrvTermData)(data), (ErlDrvTermData)len,
         ERL_DRV_TUPLE, 2
       };
       cdrv_send_data(context->erl_port, context->read_reply_to,
                      reply, sizeof(reply) / sizeof(reply[0]));
       cdrv_stop_reading(context);
-    } else if (result == 0) { // eof
+    } else if (len == 0) { // eof
       ErlDrvTermData reply[] = {
         ERL_DRV_ATOM, driver_mk_atom("eof")
       };
@@ -421,15 +743,15 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
       cdrv_stop_reading(context);
       cdrv_close_fd(context, FDR);
     } else { // {error, Reason :: atom()}
-      cdrv_send_error(context->erl_port, context->read_reply_to, errno);
+      cdrv_send_error(context->erl_port, context->read_reply_to, error);
       cdrv_stop_reading(context);
       cdrv_close_fd(context, FDR);
     }
   } else { // context->read_mode == active | once
-    if (result > 0) { // {subproc, Port, Data :: string() | binary()}
+    if (len > 0) { // {subproc, Port, Data :: string() | binary()}
       ErlDrvTermData reply[] = {
         ((context->data_mode == string) ? ERL_DRV_STRING : ERL_DRV_BUF2BINARY),
-          (ErlDrvTermData)(buffer), (ErlDrvTermData)result
+          (ErlDrvTermData)(data), (ErlDrvTermData)len
       };
 
       cdrv_send_active(context->erl_port, "subproc", reply,
@@ -439,13 +761,13 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
         cdrv_stop_reading(context);
         context->read_mode = passive;
       }
-    } else if (result == 0) { // {subproc_closed, Port}
+    } else if (len == 0) { // {subproc_closed, Port}
       cdrv_send_active(context->erl_port, "subproc_closed", NULL, 0, 0);
       cdrv_stop_reading(context);
       cdrv_close_fd(context, FDR);
     } else { // {subproc_error, Port, Reason :: atom()}
       ErlDrvTermData reply[] = {
-        ERL_DRV_ATOM, driver_mk_atom(erl_errno_id(errno))
+        ERL_DRV_ATOM, driver_mk_atom(erl_errno_id(error))
       };
 
       cdrv_send_active(context->erl_port, "subproc_error", reply,
@@ -646,6 +968,19 @@ void cdrv_close_fd(struct subproc_context *context, unsigned int fds)
       (queued_bytes = driver_sizeq(context->erl_port)) > 0) {
     driver_deq(context->erl_port, queued_bytes);
     set_busy_port(context->erl_port, 0);
+  }
+
+  if ((fds & FDR) == FDR) {
+    if (context->buffer != NULL)
+      driver_free_binary(context->buffer);
+    context->buffer = NULL;
+    context->buffer_used = 0;
+
+    if (context->packet != NULL)
+      driver_free_binary(context->packet);
+    context->packet = NULL;
+    context->packet_used = 0;
+    context->packet_size = 0;
   }
 
   if (context->fdin >= 0 && context->fdin == context->fdout) {
