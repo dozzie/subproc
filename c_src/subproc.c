@@ -425,36 +425,34 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
       cdrv_stop_reading(context);
       cdrv_close_fd(context, FDR);
     }
-  }
+  } else { // context->read_mode == active | once
+    if (result > 0) { // {subproc, Port, Data :: string() | binary()}
+      ErlDrvTermData reply[] = {
+        ((context->data_mode == string) ? ERL_DRV_STRING : ERL_DRV_BUF2BINARY),
+          (ErlDrvTermData)(buffer), (ErlDrvTermData)result
+      };
 
-  // one of the active modes
+      cdrv_send_active(context->erl_port, "subproc", reply,
+                       sizeof(reply) / sizeof(reply[0]), 1);
 
-  if (result > 0) { // {subproc, Port, Data :: string() | binary()}
-    ErlDrvTermData reply[] = {
-      ((context->data_mode == string) ? ERL_DRV_STRING : ERL_DRV_BUF2BINARY),
-        (ErlDrvTermData)(buffer), (ErlDrvTermData)result
-    };
-
-    cdrv_send_active(context->erl_port, "subproc", reply,
-                     sizeof(reply) / sizeof(reply[0]), 1);
-
-    if (context->read_mode == once) {
+      if (context->read_mode == once) {
+        cdrv_stop_reading(context);
+        context->read_mode = passive;
+      }
+    } else if (result == 0) { // {subproc_closed, Port}
+      cdrv_send_active(context->erl_port, "subproc_closed", NULL, 0, 0);
       cdrv_stop_reading(context);
-      context->read_mode = passive;
-    }
-  } else if (result == 0) { // {subproc_closed, Port}
-    cdrv_send_active(context->erl_port, "subproc_closed", NULL, 0, 0);
-    cdrv_stop_reading(context);
-    cdrv_close_fd(context, FDR);
-  } else { // {subproc_error, Port, Reason :: atom()}
-    ErlDrvTermData reply[] = {
-      ERL_DRV_ATOM, driver_mk_atom(erl_errno_id(errno))
-    };
+      cdrv_close_fd(context, FDR);
+    } else { // {subproc_error, Port, Reason :: atom()}
+      ErlDrvTermData reply[] = {
+        ERL_DRV_ATOM, driver_mk_atom(erl_errno_id(errno))
+      };
 
-    cdrv_send_active(context->erl_port, "subproc_error", reply,
-                     sizeof(reply) / sizeof(reply[0]), 1);
-    cdrv_stop_reading(context);
-    cdrv_close_fd(context, FDR);
+      cdrv_send_active(context->erl_port, "subproc_error", reply,
+                       sizeof(reply) / sizeof(reply[0]), 1);
+      cdrv_stop_reading(context);
+      cdrv_close_fd(context, FDR);
+    }
   }
 }
 
