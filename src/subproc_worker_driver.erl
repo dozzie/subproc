@@ -406,7 +406,7 @@ ioctl_setopts(Port, Options) ->
     setopts_read_mode(Options),
     setopts_data_mode(Options),
     setopts_packet_mode(Options),
-    setopts_buffer_size(Options)
+    setopts_packet_size(Options)
   ]),
   ok.
 
@@ -444,13 +444,13 @@ setopts_packet_mode(#opts{packet = 2})    -> <<3:8>>;
 setopts_packet_mode(#opts{packet = 4})    -> <<4:8>>;
 setopts_packet_mode(#opts{packet = line}) -> <<5:8>>.
 
-%% @doc Encode buffer size (maximum allowed packet).
+%% @doc Encode maximum allowed packet size.
 
--spec setopts_buffer_size(Opts :: #opts{}) ->
+-spec setopts_packet_size(Opts :: #opts{}) ->
   binary().
 
-setopts_buffer_size(#opts{packet_size = undefined}) -> <<0:32>>;
-setopts_buffer_size(#opts{packet_size = Size}) -> <<Size:32>>.
+setopts_packet_size(#opts{packet_size = undefined}) -> <<0:32>>;
+setopts_packet_size(#opts{packet_size = Size}) -> <<Size:32>>.
 
 %% }}}
 %%----------------------------------------------------------
@@ -461,13 +461,13 @@ setopts_buffer_size(#opts{packet_size = Size}) -> <<Size:32>>.
   #opts{}.
 
 ioctl_getopts(Port) ->
-  <<ReadMode:8, DataMode:8, PacketMode:8, BufSize:32, PID:32>> =
+  <<ReadMode:8, DataMode:8, PacketMode:8, PacketSize:32, PID:32>> =
     port_control(Port, 2, <<>>),
   _Result = #opts{
     mode = getopts_data_mode(DataMode),
     active = getopts_read_mode(ReadMode),
     packet = getopts_packet_mode(PacketMode),
-    packet_size = BufSize,
+    packet_size = PacketSize,
     pid = getopts_pid(PID)
   }.
 
