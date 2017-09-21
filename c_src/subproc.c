@@ -520,14 +520,16 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
     } else {
       cdrv_send_input(context, resbuf, psize, 0);
     }
-  }
 
-  if (context->read_mode == active) {
-    ssize_t sent = cdrv_flush_packet(context, 0, 0);
-    if (sent < 0) {
-      // TODO: detect other failures (e.g. "packet too big", EMSGSIZE)
-      cdrv_send_input(context, NULL, -1, ENOMEM);
-      return;
+    if (context->read_mode == active) {
+      // after a complete packet there could be some data leftovers; try
+      // parsing and sending full packets out of them
+      ssize_t sent = cdrv_flush_packet(context, 0, 0);
+      if (sent < 0) {
+        // TODO: detect other failures (e.g. "packet too big", EMSGSIZE)
+        cdrv_send_input(context, NULL, -1, ENOMEM);
+        return;
+      }
     }
   }
 }
