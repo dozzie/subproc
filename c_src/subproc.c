@@ -275,11 +275,32 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     if (len != 7)
       return -1;
 
-    unsigned int read_mode   = buf[0];
-    unsigned int data_mode   = buf[1];
-    unsigned int packet_mode = buf[2];
-    if (read_mode > 3 || data_mode > 2 || packet_mode > 5)
-      return -1;
+    enum read_mode read_mode;
+    enum data_mode data_mode;
+    enum packet_mode packet_mode;
+
+    switch (buf[0]) {
+      case 0: read_mode = context->read_mode; break;
+      case 1: read_mode = passive; break;
+      case 2: read_mode = active; break;
+      case 3: read_mode = once; break;
+      default: return -1;
+    }
+    switch (buf[1]) {
+      case 0: data_mode = context->data_mode; break;
+      case 1: data_mode = string; break;
+      case 2: data_mode = binary; break;
+      default: return -1;
+    }
+    switch (buf[2]) {
+      case 0: packet_mode = context->packet_mode; break;
+      case 1: packet_mode = raw; break;
+      case 2: packet_mode = pfx1; break;
+      case 3: packet_mode = pfx2; break;
+      case 4: packet_mode = pfx4; break;
+      case 5: packet_mode = line; break;
+      default: return -1;
+    }
 
     if (read_mode != passive && context->read_mode == passive) {
       // change from passive to active mode
@@ -292,25 +313,9 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       cdrv_stop_reading(context);
     }
 
-    switch (read_mode) {
-      case 1: context->read_mode = passive; break;
-      case 2: context->read_mode = active; break;
-      case 3: context->read_mode = once; break;
-      default: break; // 0, no change
-    }
-    switch (data_mode) {
-      case 1: context->data_mode = string; break;
-      case 2: context->data_mode = binary; break;
-      default: break; // 0, no change
-    }
-    switch (packet_mode) {
-      case 1: context->packet_mode = raw; break;
-      case 2: context->packet_mode = pfx1; break;
-      case 3: context->packet_mode = pfx2; break;
-      case 4: context->packet_mode = pfx4; break;
-      case 5: context->packet_mode = line; break;
-      default: break; // 0, no change
-    }
+    context->read_mode = read_mode;
+    context->data_mode = data_mode;
+    context->packet_mode = packet_mode;
 
     if (context->read_mode != passive) {
       // one of the active modes
