@@ -324,6 +324,12 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     context->data_mode = data_mode;
     context->packet_mode = packet_mode;
 
+    size_t max_packet_size = unpack32((unsigned char *)(buf + 3));
+    if (max_packet_size > MAX_PACKET_SIZE)
+      context->max_packet_size = MAX_PACKET_SIZE;
+    else if (max_packet_size > 0)
+      context->max_packet_size = max_packet_size;
+
     if (context->read_mode != passive) {
       // one of the active modes
       int error;
@@ -334,12 +340,6 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       if (result < 0 && error != ERROR_CLOSED)
         driver_failure_posix(context->erl_port, error);
     }
-
-    size_t max_packet_size = unpack32((unsigned char *)(buf + 3));
-    if (max_packet_size > MAX_PACKET_SIZE)
-      context->max_packet_size = MAX_PACKET_SIZE;
-    else if (max_packet_size > 0)
-      context->max_packet_size = max_packet_size;
 
     return 0;
   } // }}}
@@ -1126,6 +1126,7 @@ static int32_t packet_start_parse(struct packet *ctx,
     ctx->use_packet = 0;
 
   int32_t packet_size = packet_pending_complete_size(ctx);
+  // NOTE: packet errors (EMSGSIZE) will propagate through this `if'
   if (packet_size == PKT_ERR_NOT_READY && packet_alloc_buffer(ctx) < 0)
     // we ran out of memory when preparing for next data portion
     return PKT_ERR_ENOMEM;
@@ -1293,8 +1294,15 @@ static int32_t packet_update_read(struct packet *ctx, size_t len)
 
       if (eol != NULL) {
         ctx->target_size = eol - ctx->buffer->orig_bytes + 1;
+        // we already have the full message in memory, but let's behave
+        // consistently
+        if (ctx->target_size > ctx->max_size)
+          return PKT_ERR_EMSGSIZE;
         return ctx->target_size; // NOTE: this is >0
       }
+
+      if (ctx->buffer_used > ctx->max_size)
+        return PKT_ERR_EMSGSIZE;
 
       // XXX: make sure the buffer has enough free space to fit the most
       // possible amount of leftovers after finding the newline (see
@@ -1360,6 +1368,8 @@ static uint32_t packet_get(struct packet *ctx, char **resbuf,
 // determine size of a complete packet from pending buffer including prefix
 // headers in pfx[124] modes
 // returns PKT_ERR_NOT_READY if pending data doesn't form a complete packet
+// returns PKT_ERR_EMSGSIZE when a packet is expected to be larger than
+// allowed maximum
 static int32_t packet_pending_complete_size(struct packet *ctx)
 {
   unsigned char *eol;
@@ -1368,11 +1378,15 @@ static int32_t packet_pending_complete_size(struct packet *ctx)
     case raw:
       if (ctx->target_size == 0) {
         // no specific length requested, return whatever we have in pending
-        // buffer (and mark for packet_get_pending() that all of it should be
-        // returned)
-        ctx->target_size = ctx->pending_used;
-        return (ctx->pending_used > 0) ? ctx->pending_used : PKT_ERR_NOT_READY;
+        // buffer (up to maximum packet size)
+        if (ctx->pending_used == 0)
+          return PKT_ERR_NOT_READY;
+        ctx->target_size = (ctx->pending_used <= ctx->max_size) ?
+                             ctx->pending_used : ctx->max_size;
+        return ctx->target_size;
       }
+      // NOTE: the user knows what he's doing, we won't check if he requested
+      // more than max_size bytes
       return (ctx->pending_used >= ctx->target_size) ?
                ctx->target_size : PKT_ERR_NOT_READY;
 
@@ -1381,8 +1395,12 @@ static int32_t packet_pending_complete_size(struct packet *ctx)
         ctx->target_size = (uint8_t)ctx->pending_start[0];
         ctx->pending_start += 1;
         ctx->pending_used -= 1;
-        return (ctx->pending_used >= ctx->target_size) ?
-                 ctx->target_size : PKT_ERR_NOT_READY;
+        if (ctx->target_size > ctx->max_size)
+          return PKT_ERR_EMSGSIZE;
+        else if (ctx->pending_used < ctx->target_size)
+          return PKT_ERR_NOT_READY;
+        else
+          return ctx->target_size;
       }
       // NOTE: (pending_start == pending), as pending_start is reset when
       // pending_used reaches zero
@@ -1393,8 +1411,12 @@ static int32_t packet_pending_complete_size(struct packet *ctx)
         ctx->target_size = unpack16(ctx->pending_start);
         ctx->pending_start += 2;
         ctx->pending_used -= 2;
-        return (ctx->pending_used >= ctx->target_size) ?
-                 ctx->target_size : PKT_ERR_NOT_READY;
+        if (ctx->target_size > ctx->max_size)
+          return PKT_ERR_EMSGSIZE;
+        else if (ctx->pending_used < ctx->target_size)
+          return PKT_ERR_NOT_READY;
+        else
+          return ctx->target_size;
       } else if (ctx->pending_start != ctx->pending) {
         // make sure there's space for reading rest of the header
         memmove(ctx->pending, ctx->pending_start, ctx->pending_used);
@@ -1407,8 +1429,12 @@ static int32_t packet_pending_complete_size(struct packet *ctx)
         ctx->target_size = unpack32(ctx->pending_start);
         ctx->pending_start += 4;
         ctx->pending_used -= 4;
-        return (ctx->pending_used >= ctx->target_size) ?
-                 ctx->target_size : PKT_ERR_NOT_READY;
+        if (ctx->target_size > ctx->max_size)
+          return PKT_ERR_EMSGSIZE;
+        else if (ctx->pending_used < ctx->target_size)
+          return PKT_ERR_NOT_READY;
+        else
+          return ctx->target_size;
       } else if (ctx->pending_start != ctx->pending) {
         // make sure there's space for reading rest of the header
         memmove(ctx->pending, ctx->pending_start, ctx->pending_used);
@@ -1420,6 +1446,10 @@ static int32_t packet_pending_complete_size(struct packet *ctx)
       if (ctx->pending_used > 0 &&
           (eol = memchr(ctx->pending_start, '\n', ctx->pending_used)) != NULL) {
         ctx->target_size = eol - ctx->pending_start + 1;
+        if (ctx->target_size > ctx->max_size)
+          // the user must want quite short lines for this to happen, but
+          // let's respect that wish
+          return PKT_ERR_EMSGSIZE;
         return ctx->target_size; // NOTE: this is >0
       }
       return PKT_ERR_NOT_READY;
