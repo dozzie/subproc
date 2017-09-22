@@ -107,7 +107,7 @@ static int cdrv_send_ok(ErlDrvPort port, ErlDrvTermData receiver);
 static int cdrv_send_data(ErlDrvPort port, ErlDrvTermData receiver, ErlDrvTermData *data, size_t len);
 static int cdrv_send_active(ErlDrvPort port, char *reply_tag, ErlDrvTermData *data, size_t len, size_t tuple_len);
 static int cdrv_send_error(ErlDrvPort port, ErlDrvTermData receiver, int error);
-static ssize_t cdrv_flush_packet(struct subproc_context *context, size_t pkt_count, size_t read_size);
+static ssize_t cdrv_flush_packet(struct subproc_context *context, ErlDrvTermData receiver, size_t pkt_count, size_t read_size);
 
 static void cdrv_close_fd(struct subproc_context *context, unsigned int fds);
 static void cdrv_interrupt_write(struct subproc_context *context, int error);
@@ -454,15 +454,21 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
 //----------------------------------------------------------
 // Erlang input on select descriptor {{{
 
+// NOTE: these three functions ignore `receiver' argument in active mode and
+// send a message to driver_caller(context->erl_port)
+
 // NOTE: on EOF (len == 0) and error (len < 0), reading descriptor is closed
 // and read buffers are freed
 static void cdrv_send_input(struct subproc_context *context,
+                            ErlDrvTermData receiver,
                             void *data, ssize_t len, int error);
 // to send a (size-prefixed) packet (valid read, non-EOF) with empty payload
-static void cdrv_send_empty_input(struct subproc_context *context);
+static void cdrv_send_empty_input(struct subproc_context *context,
+                                  ErlDrvTermData receiver);
 // NOTE: this function assumes that read was successful and the whole binary
 // is to be sent; caller should also call `driver_free_binary(data)'
 static void cdrv_send_binary(struct subproc_context *context,
+                             ErlDrvTermData receiver,
                              ErlDrvBinary *data);
 
 static
@@ -477,7 +483,7 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
     // buffer was flushed before enabling reading from descriptor
     char buffer[DEFAULT_BUFFER_SIZE];
     ssize_t result = read((long int)event, buffer, sizeof(buffer));
-    cdrv_send_input(context, buffer, result, errno);
+    cdrv_send_input(context, context->read_reply_to, buffer, result, errno);
     return;
   }
 
@@ -495,7 +501,8 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
                                         context->max_packet_size,
                                         (context->data_mode == binary));
     if (result < PKT_ERR_NOT_READY) {
-      cdrv_send_input(context, NULL, -1, packet_errno(result));
+      cdrv_send_input(context, context->read_reply_to,
+                      NULL, -1, packet_errno(result));
       return;
     }
     // XXX: (result > PKT_ERR_NOT_READY) cannot occur here because the pending
@@ -506,13 +513,14 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
   void *buffer = packet_buffer(&context->packet, &bufsize);
   ssize_t result = read((long int)event, buffer, bufsize);
   if (result <= 0) {
-    cdrv_send_input(context, NULL, result, errno);
+    cdrv_send_input(context, context->read_reply_to, NULL, result, errno);
     return;
   }
 
   int32_t psize = packet_update_read(&context->packet, result);
   if (psize < PKT_ERR_NOT_READY) {
-    cdrv_send_input(context, NULL, -1, packet_errno(psize));
+    cdrv_send_input(context, context->read_reply_to,
+                    NULL, -1, packet_errno(psize));
     return;
   }
 
@@ -526,31 +534,33 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
     // special case for size-prefixed packet with empty payload (regular
     // cdrv_send_input() thinks we got EOF, which is not the case)
 
-    cdrv_send_empty_input(context);
+    cdrv_send_empty_input(context, context->read_reply_to);
   } else {
     char *resbuf;
     ErlDrvBinary *resbin;
     packet_get(&context->packet, &resbuf, &resbin);
     if (resbin != NULL) {
-      cdrv_send_binary(context, resbin);
+      cdrv_send_binary(context, context->read_reply_to, resbin);
       driver_free_binary(resbin);
     } else {
-      cdrv_send_input(context, resbuf, psize, 0);
+      cdrv_send_input(context, context->read_reply_to, resbuf, psize, 0);
     }
   }
 
   if (context->read_mode == active) {
     // after a complete packet there could be some data leftovers; try parsing
     // and sending full packets out of them
-    ssize_t sent = cdrv_flush_packet(context, 0, 0);
+    ssize_t sent = cdrv_flush_packet(context, ERL_PID_DOESNT_MATTER, 0, 0);
     if (sent < 0) {
-      cdrv_send_input(context, NULL, -1, packet_errno(sent));
+      cdrv_send_input(context, context->read_reply_to,
+                      NULL, -1, packet_errno(sent));
       return;
     }
   }
 }
 
 static void cdrv_send_binary(struct subproc_context *context,
+                             ErlDrvTermData receiver,
                              ErlDrvBinary *data)
 {
   if (context->read_mode == passive) {
@@ -559,7 +569,7 @@ static void cdrv_send_binary(struct subproc_context *context,
       ERL_DRV_BINARY, (ErlDrvTermData)data, data->orig_size, 0,
       ERL_DRV_TUPLE, 2
     };
-    cdrv_send_data(context->erl_port, context->read_reply_to,
+    cdrv_send_data(context->erl_port, receiver,
                    reply, sizeof(reply) / sizeof(reply[0]));
     cdrv_stop_reading(context);
   } else { // active | once
@@ -577,7 +587,8 @@ static void cdrv_send_binary(struct subproc_context *context,
   }
 }
 
-static void cdrv_send_empty_input(struct subproc_context *context)
+static void cdrv_send_empty_input(struct subproc_context *context,
+                                  ErlDrvTermData receiver)
 {
   if (context->read_mode == passive) {
     ErlDrvTermData reply[] = {
@@ -586,7 +597,7 @@ static void cdrv_send_empty_input(struct subproc_context *context)
         (ErlDrvTermData)"", (ErlDrvTermData)0,
       ERL_DRV_TUPLE, 2
     };
-    cdrv_send_data(context->erl_port, context->read_reply_to,
+    cdrv_send_data(context->erl_port, receiver,
                    reply, sizeof(reply) / sizeof(reply[0]));
     cdrv_stop_reading(context);
   } else {
@@ -606,6 +617,7 @@ static void cdrv_send_empty_input(struct subproc_context *context)
 }
 
 static void cdrv_send_input(struct subproc_context *context,
+                            ErlDrvTermData receiver,
                             void *data, ssize_t len, int error)
 {
   // this should not be necessary (cdrv_ready_input() has some FD event
@@ -621,19 +633,19 @@ static void cdrv_send_input(struct subproc_context *context,
           (ErlDrvTermData)(data), (ErlDrvTermData)len,
         ERL_DRV_TUPLE, 2
       };
-      cdrv_send_data(context->erl_port, context->read_reply_to,
+      cdrv_send_data(context->erl_port, receiver,
                      reply, sizeof(reply) / sizeof(reply[0]));
       cdrv_stop_reading(context);
     } else if (len == 0) { // eof
       ErlDrvTermData reply[] = {
         ERL_DRV_ATOM, driver_mk_atom("eof")
       };
-      cdrv_send_data(context->erl_port, context->read_reply_to,
+      cdrv_send_data(context->erl_port, receiver,
                      reply, sizeof(reply) / sizeof(reply[0]));
       cdrv_stop_reading(context);
       cdrv_close_fd(context, FDR);
     } else { // {error, Reason :: atom()}
-      cdrv_send_error(context->erl_port, context->read_reply_to, error);
+      cdrv_send_error(context->erl_port, receiver, error);
       cdrv_stop_reading(context);
       cdrv_close_fd(context, FDR);
     }
@@ -825,11 +837,7 @@ int cdrv_set_reading(struct subproc_context *context, ErlDrvTermData caller,
     // recv() only need one
     size_t send_count = (context->read_mode == active) ? 0 : 1;
 
-    // necessary, and safe here to set (active modes don't use it, and in
-    // passive mode we're just entering it, so its value is old)
-    context->read_reply_to = caller;
-
-    ssize_t sent = cdrv_flush_packet(context, send_count, recv_size);
+    ssize_t sent = cdrv_flush_packet(context, caller, send_count, recv_size);
     if (sent < 0) {
       if (error != NULL)
         *error = packet_errno(sent);
@@ -847,7 +855,6 @@ int cdrv_set_reading(struct subproc_context *context, ErlDrvTermData caller,
 
   if (is_recv /* && context->read_mode == passive */) {
     context->reading = 1;
-    // this should already be set for calling cdrv_flush_packet() earlier
     context->read_reply_to = caller;
   }
 
@@ -943,6 +950,7 @@ void cdrv_close_fd(struct subproc_context *context, unsigned int fds)
 // values with packet_errno() function
 static
 ssize_t cdrv_flush_packet(struct subproc_context *context, size_t pkt_count,
+                          ErlDrvTermData receiver,
                           size_t read_size)
 {
   ssize_t sent_packets = 0;
@@ -961,7 +969,7 @@ ssize_t cdrv_flush_packet(struct subproc_context *context, size_t pkt_count,
       // special case for size-prefixed packet with empty payload (regular
       // cdrv_send_input() thinks we got EOF, which is not the case)
 
-      cdrv_send_empty_input(context);
+      cdrv_send_empty_input(context, receiver);
       ++sent_packets;
       continue;
     }
@@ -969,7 +977,7 @@ ssize_t cdrv_flush_packet(struct subproc_context *context, size_t pkt_count,
     char *data = packet_get_pending(&context->packet);
 
     if (context->read_mode == passive) {
-      cdrv_send_input(context, data, size, 0);
+      cdrv_send_input(context, receiver, data, size, 0);
     } else {
       ErlDrvTermData reply[] = {
         ((context->data_mode == string) ? ERL_DRV_STRING : ERL_DRV_BUF2BINARY),
