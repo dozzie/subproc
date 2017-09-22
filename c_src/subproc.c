@@ -115,8 +115,15 @@ static void cdrv_interrupt_read(struct subproc_context *context, int error);
 static int  cdrv_set_reading(struct subproc_context *context, ErlDrvTermData caller, int is_recv, size_t recv_size, int *error);
 static void cdrv_stop_reading(struct subproc_context *context);
 
+// all of these are and smaller than PKT_ERR_NOT_READY
+#define PKT_ERR_NOT_READY       -1
+#define PKT_ERR_ENOMEM          -2
+#define PKT_ERR_EMSGSIZE        -3
+#define PKT_ERR_NEVER_REACHED   -255
+
 static void packet_init(struct packet *ctx);
 static void packet_free(struct packet *ctx);
+static int  packet_errno(int error_code);
 static int  packet_boundary(struct packet *ctx);
 static int32_t packet_start_parse(struct packet *ctx,
                                   enum packet_mode packet_mode,
@@ -451,6 +458,8 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
 // and read buffers are freed
 static void cdrv_send_input(struct subproc_context *context,
                             void *data, ssize_t len, int error);
+// to send a (size-prefixed) packet (valid read, non-EOF) with empty payload
+static void cdrv_send_empty_input(struct subproc_context *context);
 // NOTE: this function assumes that read was successful and the whole binary
 // is to be sent; caller should also call `driver_free_binary(data)'
 static void cdrv_send_binary(struct subproc_context *context,
@@ -485,13 +494,12 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
                                         0, // target size
                                         context->max_packet_size,
                                         (context->data_mode == binary));
-    if (result < 0) {
-      // TODO: detect other failures (e.g. "packet too big", EMSGSIZE)
-      cdrv_send_input(context, NULL, -1, ENOMEM);
+    if (result < PKT_ERR_NOT_READY) {
+      cdrv_send_input(context, NULL, -1, packet_errno(result));
       return;
     }
-    // XXX: (result > 0) cannot occur here because the pending buffer was
-    // flushed (see earlier comment in this block)
+    // XXX: (result > PKT_ERR_NOT_READY) cannot occur here because the pending
+    // buffer was flushed (see earlier comment in this block)
   }
 
   size_t bufsize = 0;
@@ -503,14 +511,23 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
   }
 
   int32_t psize = packet_update_read(&context->packet, result);
-  if (psize < 0) {
-    // TODO: detect other failures (e.g. "packet too big", EMSGSIZE)
-    cdrv_send_input(context, NULL, -1, ENOMEM);
+  if (psize < PKT_ERR_NOT_READY) {
+    cdrv_send_input(context, NULL, -1, packet_errno(psize));
     return;
   }
 
-  if (psize > 0) {
-    // we have a complete packet (and we're at packet boundary)
+  if (psize == PKT_ERR_NOT_READY)
+    // wait for more data
+    return;
+
+  // we have a complete packet (and we're at packet boundary)
+
+  if (psize == 0) {
+    // special case for size-prefixed packet with empty payload (regular
+    // cdrv_send_input() thinks we got EOF, which is not the case)
+
+    cdrv_send_empty_input(context);
+  } else {
     char *resbuf;
     ErlDrvBinary *resbin;
     packet_get(&context->packet, &resbuf, &resbin);
@@ -520,16 +537,15 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
     } else {
       cdrv_send_input(context, resbuf, psize, 0);
     }
+  }
 
-    if (context->read_mode == active) {
-      // after a complete packet there could be some data leftovers; try
-      // parsing and sending full packets out of them
-      ssize_t sent = cdrv_flush_packet(context, 0, 0);
-      if (sent < 0) {
-        // TODO: detect other failures (e.g. "packet too big", EMSGSIZE)
-        cdrv_send_input(context, NULL, -1, ENOMEM);
-        return;
-      }
+  if (context->read_mode == active) {
+    // after a complete packet there could be some data leftovers; try parsing
+    // and sending full packets out of them
+    ssize_t sent = cdrv_flush_packet(context, 0, 0);
+    if (sent < 0) {
+      cdrv_send_input(context, NULL, -1, packet_errno(sent));
+      return;
     }
   }
 }
@@ -549,6 +565,34 @@ static void cdrv_send_binary(struct subproc_context *context,
   } else { // active | once
     ErlDrvTermData reply[] = {
       ERL_DRV_BINARY, (ErlDrvTermData)data, data->orig_size, 0
+    };
+
+    cdrv_send_active(context->erl_port, "subproc", reply,
+                     sizeof(reply) / sizeof(reply[0]), 1);
+
+    if (context->read_mode == once) {
+      cdrv_stop_reading(context);
+      context->read_mode = passive;
+    }
+  }
+}
+
+static void cdrv_send_empty_input(struct subproc_context *context)
+{
+  if (context->read_mode == passive) {
+    ErlDrvTermData reply[] = {
+      ERL_DRV_ATOM, driver_mk_atom("ok"),
+      ((context->data_mode == string) ? ERL_DRV_STRING : ERL_DRV_BUF2BINARY),
+        (ErlDrvTermData)"", (ErlDrvTermData)0,
+      ERL_DRV_TUPLE, 2
+    };
+    cdrv_send_data(context->erl_port, context->read_reply_to,
+                   reply, sizeof(reply) / sizeof(reply[0]));
+    cdrv_stop_reading(context);
+  } else {
+    ErlDrvTermData reply[] = {
+      ((context->data_mode == string) ? ERL_DRV_STRING : ERL_DRV_BUF2BINARY),
+        (ErlDrvTermData)"", (ErlDrvTermData)0
     };
 
     cdrv_send_active(context->erl_port, "subproc", reply,
@@ -787,9 +831,8 @@ int cdrv_set_reading(struct subproc_context *context, ErlDrvTermData caller,
 
     ssize_t sent = cdrv_flush_packet(context, send_count, recv_size);
     if (sent < 0) {
-      // TODO: detect other failures (e.g. "packet too big", EMSGSIZE)
       if (error != NULL)
-        *error = ENOMEM;
+        *error = packet_errno(sent);
       return -1;
     }
 
@@ -896,6 +939,8 @@ void cdrv_close_fd(struct subproc_context *context, unsigned int fds)
   }
 }
 
+// NOTE: errors (<0) returned from this function can be translated to `errno'
+// values with packet_errno() function
 static
 ssize_t cdrv_flush_packet(struct subproc_context *context, size_t pkt_count,
                           size_t read_size)
@@ -906,11 +951,20 @@ ssize_t cdrv_flush_packet(struct subproc_context *context, size_t pkt_count,
     int32_t size = packet_start_parse(&context->packet, context->packet_mode,
                                       read_size, context->max_packet_size,
                                       (context->data_mode == binary));
-    if (size < 0) // error, leave early
+    if (size < PKT_ERR_NOT_READY) // error, leave early
       return size;
 
-    if (size == 0)
+    if (size == PKT_ERR_NOT_READY)
       break;
+
+    if (size == 0) {
+      // special case for size-prefixed packet with empty payload (regular
+      // cdrv_send_input() thinks we got EOF, which is not the case)
+
+      cdrv_send_empty_input(context);
+      ++sent_packets;
+      continue;
+    }
 
     char *data = packet_get_pending(&context->packet);
 
@@ -1035,12 +1089,23 @@ static void packet_free(struct packet *ctx)
   packet_init(ctx);
 }
 
+static int packet_errno(int error_code)
+{
+  switch (error_code) {
+    case PKT_ERR_ENOMEM: return ENOMEM;
+    case PKT_ERR_EMSGSIZE: return EMSGSIZE;
+  }
+  return ENOSYS;
+}
+
 // }}}
 //----------------------------------------------------------
 // packet_start_parse() {{{
 
 // returns size of a complete packet that can be parsed from pending data,
-// 0 if there's too little data for a complete packet, -1 on out of memory
+// PKT_ERR_NOT_READY if there's too little data for a complete packet,
+// <PKT_ERR_NOT_READY on errors (out of memory, too big (size-prefixed) packet
+// expected from pending data)
 // should only be called at packet boundary (packet_boundary())
 static int32_t packet_start_parse(struct packet *ctx,
                                   enum packet_mode packet_mode,
@@ -1061,9 +1126,9 @@ static int32_t packet_start_parse(struct packet *ctx,
     ctx->use_packet = 0;
 
   int32_t packet_size = packet_pending_complete_size(ctx);
-  if (packet_size == 0) // we'll be reading more data soon
-    if (packet_alloc_buffer(ctx) != 0) // out of memory
-      return -1;
+  if (packet_size == PKT_ERR_NOT_READY && packet_alloc_buffer(ctx) < 0)
+    // we ran out of memory when preparing for next data portion
+    return PKT_ERR_ENOMEM;
   return packet_size;
 }
 
@@ -1183,7 +1248,8 @@ static int32_t packet_update_read(struct packet *ctx, size_t len)
   switch (ctx->packet_mode) {
     case raw:
       ctx->buffer_used += len;
-      return (ctx->buffer_used == ctx->target_size) ? ctx->target_size : 0;
+      return (ctx->buffer_used == ctx->target_size) ?
+               ctx->target_size : PKT_ERR_NOT_READY;
 
     case pfx1:
     case pfx2:
@@ -1191,7 +1257,7 @@ static int32_t packet_update_read(struct packet *ctx, size_t len)
       if (ctx->target_size == 0) { // header not read yet
         ctx->pending_used += len;
         if (ctx->pending_used < hlen)
-          return 0;
+          return PKT_ERR_NOT_READY;
 
         if (ctx->packet_mode == pfx1)
           ctx->target_size = (uint8_t)ctx->pending_start[0];
@@ -1202,16 +1268,24 @@ static int32_t packet_update_read(struct packet *ctx, size_t len)
 
         ctx->pending_used = 0;
         ctx->pending_start = ctx->pending;
-        return packet_alloc_buffer(ctx);
+
+        if (ctx->target_size == 0)
+          return 0; // valid and complete packet
+
+        if (packet_alloc_buffer(ctx) < 0)
+          return PKT_ERR_ENOMEM;
+        return PKT_ERR_NOT_READY;
       }
 
       if (ctx->packet != NULL) {
         ctx->packet_used += len;
-        return (ctx->packet_used == ctx->target_size) ? ctx->target_size : 0;
+        return (ctx->packet_used == ctx->target_size) ?
+                 ctx->target_size : PKT_ERR_NOT_READY;
       }
 
       ctx->buffer_used += len;
-      return (ctx->buffer_used == ctx->target_size) ? ctx->target_size : 0;
+      return (ctx->buffer_used == ctx->target_size) ?
+               ctx->target_size : PKT_ERR_NOT_READY;
 
     case line:
       eol = memchr(ctx->buffer->orig_bytes + ctx->buffer_used, '\n', len);
@@ -1219,7 +1293,7 @@ static int32_t packet_update_read(struct packet *ctx, size_t len)
 
       if (eol != NULL) {
         ctx->target_size = eol - ctx->buffer->orig_bytes + 1;
-        return ctx->target_size;
+        return ctx->target_size; // NOTE: this is >0
       }
 
       // XXX: make sure the buffer has enough free space to fit the most
@@ -1230,12 +1304,12 @@ static int32_t packet_update_read(struct packet *ctx, size_t len)
           driver_realloc_binary(ctx->buffer,
                                 ctx->buffer->orig_size + sizeof(ctx->pending));
       if (ctx->buffer == NULL)
-        return -1;
-      return 0;
+        return PKT_ERR_ENOMEM;
+      return PKT_ERR_NOT_READY;
   }
 
   // never reached, but the compiler warns
-  return 0;
+  return PKT_ERR_NEVER_REACHED;
 }
 
 // }}}
@@ -1283,8 +1357,9 @@ static uint32_t packet_get(struct packet *ctx, char **resbuf,
 //----------------------------------------------------------
 // packet_pending_complete_size() {{{
 
-// determine size of a complete packet from pending buffer
-// returns 0 if pending data doesn't form a complete packet
+// determine size of a complete packet from pending buffer including prefix
+// headers in pfx[124] modes
+// returns PKT_ERR_NOT_READY if pending data doesn't form a complete packet
 static int32_t packet_pending_complete_size(struct packet *ctx)
 {
   unsigned char *eol;
@@ -1296,68 +1371,69 @@ static int32_t packet_pending_complete_size(struct packet *ctx)
         // buffer (and mark for packet_get_pending() that all of it should be
         // returned)
         ctx->target_size = ctx->pending_used;
-        return ctx->pending_used;
+        return (ctx->pending_used > 0) ? ctx->pending_used : PKT_ERR_NOT_READY;
       }
-      return (ctx->pending_used >= ctx->target_size) ? ctx->target_size : 0;
+      return (ctx->pending_used >= ctx->target_size) ?
+               ctx->target_size : PKT_ERR_NOT_READY;
 
     case pfx1:
-      // FIXME: packet of size 0
       if (ctx->pending_used >= 1) {
         ctx->target_size = (uint8_t)ctx->pending_start[0];
         ctx->pending_start += 1;
         ctx->pending_used -= 1;
-        return (ctx->pending_used >= ctx->target_size) ? ctx->target_size : 0;
+        return (ctx->pending_used >= ctx->target_size) ?
+                 ctx->target_size : PKT_ERR_NOT_READY;
       }
       // NOTE: (pending_start == pending), as pending_start is reset when
       // pending_used reaches zero
-      return 0;
+      return PKT_ERR_NOT_READY;
 
     case pfx2:
-      // FIXME: packet of size 0
       if (ctx->pending_used >= 2) {
         ctx->target_size = unpack16(ctx->pending_start);
         ctx->pending_start += 2;
         ctx->pending_used -= 2;
-        return (ctx->pending_used >= ctx->target_size) ? ctx->target_size : 0;
+        return (ctx->pending_used >= ctx->target_size) ?
+                 ctx->target_size : PKT_ERR_NOT_READY;
       } else if (ctx->pending_start != ctx->pending) {
         // make sure there's space for reading rest of the header
         memmove(ctx->pending, ctx->pending_start, ctx->pending_used);
         ctx->pending_start = ctx->pending;
       }
-      return 0;
+      return PKT_ERR_NOT_READY;
 
     case pfx4:
-      // FIXME: packet of size 0
       if (ctx->pending_used >= 4) {
         ctx->target_size = unpack32(ctx->pending_start);
         ctx->pending_start += 4;
         ctx->pending_used -= 4;
-        return (ctx->pending_used >= ctx->target_size) ? ctx->target_size : 0;
+        return (ctx->pending_used >= ctx->target_size) ?
+                 ctx->target_size : PKT_ERR_NOT_READY;
       } else if (ctx->pending_start != ctx->pending) {
         // make sure there's space for reading rest of the header
         memmove(ctx->pending, ctx->pending_start, ctx->pending_used);
         ctx->pending_start = ctx->pending;
       }
-      return 0;
+      return PKT_ERR_NOT_READY;
 
     case line:
       if (ctx->pending_used > 0 &&
           (eol = memchr(ctx->pending_start, '\n', ctx->pending_used)) != NULL) {
         ctx->target_size = eol - ctx->pending_start + 1;
-        return ctx->target_size;
+        return ctx->target_size; // NOTE: this is >0
       }
-      return 0;
+      return PKT_ERR_NOT_READY;
   }
 
   // never reached, but the compiler warns
-  return 0;
+  return PKT_ERR_NEVER_REACHED;
 }
 
 // }}}
 //----------------------------------------------------------
 // packet_alloc_buffer() {{{
 
-// returns 0 on success, -1 on out of memory
+// returns 0 on success, PKT_ERR_ENOMEM on out of memory
 static int32_t packet_alloc_buffer(struct packet *ctx)
 {
   if ((ctx->packet_mode == pfx1 || ctx->packet_mode == pfx2 ||
@@ -1375,7 +1451,7 @@ static int32_t packet_alloc_buffer(struct packet *ctx)
     // XXX: at this point (ctx->packet == NULL)
     ctx->packet = driver_alloc_binary(ctx->target_size);
 
-    return (ctx->packet != NULL) ? 0 : -1;
+    return (ctx->packet != NULL) ? 0 : PKT_ERR_ENOMEM;
   }
 
   size_t buffer_size = ctx->target_size; // 0 for most of the modes
@@ -1396,7 +1472,7 @@ static int32_t packet_alloc_buffer(struct packet *ctx)
     driver_free_binary(ctx->buffer);
     ctx->buffer = driver_alloc_binary(buffer_size);
   }
-  return (ctx->buffer != NULL) ? 0 : -1;
+  return (ctx->buffer != NULL) ? 0 : PKT_ERR_ENOMEM;
 }
 
 // }}}
