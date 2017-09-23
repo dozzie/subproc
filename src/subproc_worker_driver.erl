@@ -388,19 +388,27 @@ reply_wait(Port, Interval) ->
                   subproc:os_pid() | undefined, boolean(), boolean()) ->
   ok.
 
-ioctl_setfd(Port, STDIO, PID, _AutoClose, _CloseOnExit) ->
-  STDIOPart = case STDIO of
-    {bidir, FDRW} -> <<FDRW:32, FDRW:32>>;
-    {in,  FDR} -> <<FDR:32, (-1):32>>;
-    {out, FDW} -> <<(-1):32, FDW:32>>;
-    {in_out, {FDR, FDW}} -> <<FDR:32, FDW:32>>
+ioctl_setfd(Port, STDIO, PID, AutoClose, CloseOnExit) ->
+  case STDIO of
+    {bidir, FDR = FDW} -> ok;
+    {in,  FDR} -> FDW = -1;
+    {out, FDW} -> FDR = -1;
+    {in_out, {FDR, FDW}} -> ok
   end,
-  PIDPart = case PID of
-    undefined -> <<0:32>>;
-    _ when is_integer(PID) -> <<PID:32>>
+  case PID of
+    undefined -> PIDNum = 0;
+    PIDNum when is_integer(PIDNum) -> ok
   end,
-  % TODO: use `AutoClose' and `CloseOnExit'
-  port_control(Port, 0, [STDIOPart, PIDPart]),
+  AutoCloseFlag = case AutoClose of
+    true -> 1;
+    false -> 0
+  end,
+  CloseOnExitFlag = case CloseOnExit of
+    true -> 1;
+    false -> 0
+  end,
+  Request = <<FDR:32, FDW:32, PIDNum:32, AutoCloseFlag:8, CloseOnExitFlag:8>>,
+  port_control(Port, 0, Request),
   ok.
 
 %% @doc Set port options.

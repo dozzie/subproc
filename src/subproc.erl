@@ -418,8 +418,6 @@ recv(Port, Length, Timeout) ->
 %%
 %%   See {@type message()} for messages in `{active,true}' and `{active,once}'
 %%   modes.
-%%
-%% @todo Allow `{close,_}' and `{close_on_exit,_}' options
 
 -spec setopts(handle(), Options :: [Option]) ->
   ok | {error, badarg}

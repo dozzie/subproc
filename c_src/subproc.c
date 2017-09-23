@@ -89,7 +89,9 @@ struct packet {
 };
 
 struct subproc_context {
-  int reading;
+  uint8_t close_fds;
+  uint8_t close_on_exit; // either exit() or killed by signal
+  uint8_t reading;
   enum read_mode read_mode;
   enum data_mode data_mode;
   enum packet_mode packet_mode;
@@ -208,6 +210,8 @@ ErlDrvData cdrv_start(ErlDrvPort port, char *cmd)
   struct subproc_context *context =
     driver_alloc(sizeof(struct subproc_context));
 
+  context->close_fds = 0;
+  context->close_on_exit = 0;
   context->reading = 0;
   context->read_mode = passive;
   context->fdin = context->fdout = -1;
@@ -268,15 +272,16 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     if (context->fdin != -1 || context->fdout != -1) // FDs already set
       return -1;
 
-    if (len != 12)
+    if (len != 14)
       return -1;
 
-    // `buf' contains [FDR, FDW] or [FDR, FDW, PID], so 8 or 12 bytes
     context->fdin = unpack32((unsigned char *)buf);
     context->fdout = unpack32((unsigned char *)(buf + 4));
     pid_t pid = unpack32((unsigned char *)(buf + 8));
     if (pid > 0)
       context->pid = pid;
+    context->close_fds = buf[12];
+    context->close_on_exit = buf[13];
 
     if (context->fdin > 0) {
       fcntl(context->fdin, F_SETFL,
