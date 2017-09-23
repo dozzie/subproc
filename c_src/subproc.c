@@ -793,6 +793,10 @@ void cdrv_close_fd(struct subproc_context *context, unsigned int fds)
     packet_free(&context->packet);
   }
 
+  // only unset `ERL_DRV_USE' flag when we're supposed to close the
+  // descriptors
+  int close_flag = context->close_fds ? ERL_DRV_USE : 0;
+
   if (context->fdin >= 0 && context->fdin == context->fdout) {
     // bidirectional STDIO (socketpair(); pipe() only guarantees
     // unidirectional pipes)
@@ -802,7 +806,7 @@ void cdrv_close_fd(struct subproc_context *context, unsigned int fds)
     if ((fds & (FDR | FDW)) == (FDR | FDW)) {
       // close the descriptor altogether
       driver_select(context->erl_port, event,
-                    ERL_DRV_USE | ERL_DRV_READ | ERL_DRV_WRITE, 0);
+                    close_flag | ERL_DRV_READ | ERL_DRV_WRITE, 0);
       context->fdin = -1;
       context->fdout = -1;
     } else if ((fds & FDR) != 0) {
@@ -820,13 +824,13 @@ void cdrv_close_fd(struct subproc_context *context, unsigned int fds)
     // bidirectional STDIO
     if ((fds & FDR) != 0 && context->fdin >= 0) {
       event = (ErlDrvEvent)((long int)context->fdin);
-      driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 0);
+      driver_select(context->erl_port, event, close_flag | ERL_DRV_READ, 0);
       context->fdin = -1;
     }
 
     if ((fds & FDW) != 0 && context->fdout >= 0) {
       event = (ErlDrvEvent)((long int)context->fdout);
-      driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_WRITE, 0);
+      driver_select(context->erl_port, event, close_flag | ERL_DRV_WRITE, 0);
       //set_busy_port(context->erl_port, 0); // already called
       context->fdout = -1;
     }
