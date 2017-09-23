@@ -429,7 +429,7 @@ recv(Port, Length, Timeout) ->
 
 setopts(Port, Options) ->
   case subproc_worker_driver:setopts(Port, Options) of
-    ok -> ok; % TODO: set `{close,_}' and `{close_on_exit,_}' options
+    ok -> ok;
     {error, Reason} -> {error, Reason}
   end.
 
@@ -445,7 +445,7 @@ setopts(Port, Options) ->
 
 getopts(Port, Options) ->
   case subproc_worker_driver:getopts(Port, Options) of
-    {ok, Values} -> {ok, Values}; % TODO: read `close' and `close_on_exit'
+    {ok, Values} -> {ok, Values};
     {error, Reason} -> {error, Reason}
   end.
 

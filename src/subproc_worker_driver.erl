@@ -31,11 +31,18 @@
 
 -type option_name() :: mode | active | packet | packet_size.
 
+-type open_option() :: {pid, subproc:os_pid()}
+                     | {close, boolean()}
+                     | {close_on_exit, boolean()}.
+%% Options that can only be specified at `open_port()' time.
+
 -record(opts, {
   mode :: list | binary | undefined,
   active :: true | false | once | undefined,
   packet :: raw | 1 | 2 | 4 | line | undefined,
   packet_size :: pos_integer() | undefined,
+  close :: boolean() | undefined,
+  close_on_exit :: boolean() | undefined,
   pid :: subproc:os_pid() | undefined
 }).
 
@@ -45,7 +52,7 @@
 
 %% @doc Open a port for reading/writing to/from subprocess.
 
--spec open(STDIO, [subproc:read_option() | {pid, subproc:os_pid()}]) ->
+-spec open(STDIO, [subproc:read_option() | open_option()]) ->
   {ok, subproc:handle()} | {error, badarg | system_limit | subproc:posix()}
   when STDIO :: {bidir, FDRW} | {in, FDR} | {out, FDW} | {in_out, {FDR, FDW}},
        FDRW :: subproc:os_fd(),
@@ -57,15 +64,18 @@ open(STDIO, Options) ->
     mode = list,
     active = false,
     packet = raw,
-    packet_size = 16384 % 16kB
+    packet_size = 16384, % 16kB
+    close = true,        % see also `#opts{}' definition in `subproc_master'
+    close_on_exit = true % see also `#opts{}' definition in `subproc_master'
   },
   case {valid_stdio(STDIO), options(Options, Defaults)} of
-    {true, {ok, Opts = #opts{pid = PID}} } ->
+    {true, {ok, Opts = #opts{pid = PID, close = AutoClose,
+                             close_on_exit = CloseOnExit}} } ->
       PrivDir = elf_library_dir(),
       ok = erl_ddll:load(PrivDir, ?DRIVER_NAME),
       try open_port({spawn_driver, ?DRIVER_NAME}, [binary]) of
         Port ->
-          ok = ioctl_setfd(Port, STDIO, PID),
+          ok = ioctl_setfd(Port, STDIO, PID, AutoClose, CloseOnExit),
           ok = ioctl_setopts(Port, Opts),
           {ok, Port}
       catch
@@ -247,14 +257,15 @@ recv(Port, Length, Timeout) when is_integer(Timeout) ->
 
 setopts(Port, Options) ->
   case options(Options, #opts{}) of
-    {ok, Opts = #opts{pid = undefined}} ->
+    {ok, Opts = #opts{pid = undefined, close = undefined,
+                      close_on_exit = undefined}} ->
       % try..catch to match `getopts()' behaviour on invalid port
       try
         ok = ioctl_setopts(Port, Opts)
       catch
         _:_ -> {error, badarg}
       end;
-    {ok, _Opts = #opts{pid = PID}} when PID /= undefined ->
+    {ok, _Opts} ->
       {error, badarg};
     {error, badarg} ->
       {error, badarg}
@@ -374,10 +385,10 @@ reply_wait(Port, Interval) ->
 %%   Reinitializing a port is not possible and causes `error:badarg' crash.
 
 -spec ioctl_setfd(subproc:handle(), subproc:stdio(),
-                  subproc:os_pid() | undefined) ->
+                  subproc:os_pid() | undefined, boolean(), boolean()) ->
   ok.
 
-ioctl_setfd(Port, STDIO, PID) ->
+ioctl_setfd(Port, STDIO, PID, _AutoClose, _CloseOnExit) ->
   STDIOPart = case STDIO of
     {bidir, FDRW} -> <<FDRW:32, FDRW:32>>;
     {in,  FDR} -> <<FDR:32, (-1):32>>;
@@ -388,13 +399,14 @@ ioctl_setfd(Port, STDIO, PID) ->
     undefined -> <<0:32>>;
     _ when is_integer(PID) -> <<PID:32>>
   end,
+  % TODO: use `AutoClose' and `CloseOnExit'
   port_control(Port, 0, [STDIOPart, PIDPart]),
   ok.
 
 %% @doc Set port options.
 %%
-%%   PID, even if defined, is ignored, as it's only allowed to be set with
-%%   {@link ioctl_setfd/3}.
+%%   PID, autoclose, and close on exit flags, even if defined, are ignored, as
+%%   they're only allowed to be set with {@link ioctl_setfd/5}.
 
 -spec ioctl_setopts(subproc:handle(), #opts{}) ->
   ok.
@@ -517,7 +529,7 @@ getopts_pid(PID) -> PID.
 
 %% @doc Check if the list of options is valid.
 
--spec valid_options([subproc:read_option() | {pid, subproc:os_pid()}]) ->
+-spec valid_options([subproc:read_option() | open_option()]) ->
   boolean().
 
 valid_options(Options) ->
@@ -528,7 +540,7 @@ valid_options(Options) ->
 
 %% @doc Convert a list of options to a usable structure.
 
--spec options([subproc:read_option() | {pid, subproc:os_pid()}], #opts{}) ->
+-spec options([subproc:read_option() | open_option()], #opts{}) ->
   {ok, #opts{}} | {error, badarg}.
 
 options(Options, Defaults) ->
@@ -540,7 +552,7 @@ options(Options, Defaults) ->
 
 %% @doc Fold workhorse for {@link options/2}.
 
--spec option(subproc:read_option() | {pid, subproc:os_pid()}, #opts{}) ->
+-spec option(subproc:read_option() | open_option(), #opts{}) ->
   #opts{}.
 
 option(Mode, Opts) when Mode == list; Mode == binary ->
@@ -556,6 +568,10 @@ option({packet, P}, Opts) when P == 1; P == 2; P == 4; P == line ->
 option({packet_size, Size}, Opts)
 when is_integer(Size), Size > 0, Size =< ?MAX_UINT ->
   Opts#opts{packet_size = Size};
+option({close, AutoClose}, Opts) when is_boolean(AutoClose) ->
+  Opts#opts{close = AutoClose};
+option({close_on_exit, CloseOnExit}, Opts) when is_boolean(CloseOnExit) ->
+  Opts#opts{close_on_exit = CloseOnExit};
 option({pid, PID}, Opts) when is_integer(PID), PID > 0, PID =< ?MAX_SINT ->
   Opts#opts{pid = PID}.
 

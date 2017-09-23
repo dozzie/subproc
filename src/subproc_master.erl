@@ -40,8 +40,8 @@
 
 -record(opts, {
   port_type = subproc :: subproc | native | raw_fd,
-  autoclose = true :: boolean(),  % `{close, _}'
-  term_close = true :: boolean(), % `{close_on_exit, _}'
+  close = true :: boolean(),          % `{close, _}'
+  close_on_exit = true :: boolean(),  % `{close_on_exit, _}'
   exec_options = [] :: [term()],
   port_options = [] :: [term()]
 }).
@@ -123,7 +123,7 @@ open(STDIO, Options) ->
     {_, #opts{port_type = raw_fd}} ->
       {ok, STDIO};
     {{in_out, {FDR, FDW}},
-      #opts{port_type = native, port_options = Opts, autoclose = AutoClose}} ->
+      #opts{port_type = native, port_options = Opts, close = AutoClose}} ->
       try open_port({fd, FDR, FDW}, Opts) of
         Port when AutoClose ->
           ok = gen_server:call(?MODULE, {reg, Port, [FDR, FDW]}, infinity),
@@ -135,11 +135,10 @@ open(STDIO, Options) ->
         error:Reason ->
           {error, Reason}
       end;
-    {_, #opts{port_type = native, autoclose = _AutoClose}} ->
+    {_, #opts{port_type = native, close = _AutoClose}} ->
       {error, badarg};
-    {_, #opts{port_type = subproc, port_options = Opts, autoclose = _AutoClose}} ->
-      % TODO: use `AutoClose'
-      case subproc_worker_driver:open(STDIO, Opts) of
+    {_, #opts{port_type = subproc, port_options = Opts, close = AutoClose}} ->
+      case subproc_worker_driver:open(STDIO, [{close, AutoClose} | Opts]) of
         {ok, Port} ->
           % nothing to kill, nothing to close (the port closes the descriptors
           % on its own), no need to watch the port
@@ -427,10 +426,17 @@ code_change(_OldVsn, State, _Extra) ->
 
 spawn_port(MasterPort, Command, Args,
            #opts{port_type = PortType, exec_options = ExecOpts,
-                 port_options = PortOpts, autoclose = ACFlag}) ->
+                 port_options = PortOpts, close = AutoClose,
+                 close_on_exit = CloseOnExit}) ->
   case subproc_master_driver:exec(MasterPort, Command, Args, ExecOpts) of
     {ok, {ID, PID, STDIO}} when PortType == subproc ->
-      case subproc_worker_driver:open(STDIO, [{pid, PID} | PortOpts]) of
+      OpenOptions = [
+        {pid, PID},
+        {close, AutoClose},
+        {close_on_exit, CloseOnExit} |
+        PortOpts
+      ],
+      case subproc_worker_driver:open(STDIO, OpenOptions) of
         {ok, Port} ->
           {subproc, Port, ID};
         {error, Reason} ->
@@ -438,7 +444,7 @@ spawn_port(MasterPort, Command, Args,
           {error, Reason}
       end;
     {ok, {ID, _PID, STDIO}} when PortType == native ->
-      PortStub = {native, ID, STDIO, PortOpts, ACFlag},
+      PortStub = {native, ID, STDIO, PortOpts, AutoClose},
       {native, PortStub};
     {ok, {ID, PID, STDIO}} when PortType == raw_fd ->
       PortStub = {raw_fd, ID, PID, STDIO},
@@ -504,11 +510,14 @@ options(Options) ->
 option(subproc, Opts) -> Opts#opts{port_type = subproc};
 option(native,  Opts) -> Opts#opts{port_type = native};
 option(raw_fd,  Opts) -> Opts#opts{port_type = raw_fd};
-option({close, true},  Opts) -> Opts#opts{autoclose = true};
-option({close, false}, Opts) -> Opts#opts{autoclose = false};
+%% NOTE: `{close,_}' and `{close_on_exit,_}' are intercepted here, unlike
+%% other options necessary for opening a port, because for native ports they
+%% are handled from the outside of the spawned port
+option({close, true},  Opts) -> Opts#opts{close = true};
+option({close, false}, Opts) -> Opts#opts{close = false};
 option({close, _}, _Opts) -> erlang:throw({error, badarg});
-option({close_on_exit, true},  Opts) -> Opts#opts{term_close = true};
-option({close_on_exit, false}, Opts) -> Opts#opts{term_close = false};
+option({close_on_exit, true},  Opts) -> Opts#opts{close_on_exit = true};
+option({close_on_exit, false}, Opts) -> Opts#opts{close_on_exit = false};
 option({close_on_exit, _}, _Opts) -> erlang:throw({error, badarg});
 option(Option, Opts = #opts{exec_options = EOpts, port_options = POpts}) ->
   case subproc_master_driver:is_option(Option) of
