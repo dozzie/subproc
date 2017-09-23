@@ -140,8 +140,8 @@
 %%
 %% <ul>
 %%   <li>`list', `binary', `{mode,_}' -- data is returned as {@type string()}
-%%       or as {@link binary()} (for {@type @{packet, 1 | 2 | 4@}}, `binary'
-%%       mode should be a little faster)</li>
+%%       or as {@link binary()} (for {@type @{packet, raw | 1 | 2 | 4@}},
+%%       `binary' mode should be a little faster)</li>
 %%   <li>`{active,_}' -- set receiving {@type message()} messages from port;
 %%       when set to `false', the port will not send any data on its own and
 %%       {@link recv/2} or {@link recv/3} call is required</li>

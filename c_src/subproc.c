@@ -1159,7 +1159,8 @@ static int32_t packet_start_parse(struct packet *ctx,
                     MAX_PACKET_SIZE;
   ctx->buffer_used = 0;
   ctx->packet_used = 0;
-  if (packet_mode == pfx1 || packet_mode == pfx2 || packet_mode == pfx4)
+  if (packet_mode == pfx1 || packet_mode == pfx2 || packet_mode == pfx4 ||
+      packet_mode == raw)
     ctx->use_packet = detect_big_packet;
   else
     ctx->use_packet = 0;
