@@ -20,8 +20,6 @@
 -export([valid_options/1]).
 -export([format_error/1]).
 
--export_type([handle/0, option/0, option_name/0, message/0]).
-
 %%%---------------------------------------------------------------------------
 %%% types
 
@@ -31,33 +29,14 @@
 -define(MAX_SINT, 16#7fffffff).
 -define(MAX_UINT, 16#ffffffff).
 
--type handle() :: port().
-
 -type option_name() :: mode | active | packet | packet_size.
-
--type option() :: list | binary | {mode, list | binary}
-                | {active, true | false | once}
-                | {packet, 0 | 1 | 2 | 4 | raw | line}
-                | {packet_size, pos_integer()}.
-%% `{packet,raw}' and `{packet,0}' are synonymous, with `raw' being the
-%% canonical value.
-
--type message() :: {subproc, Port :: handle(), Data :: binary() | string()}
-                 | {subproc_closed, Port :: handle()}
-                 | {subproc_error, Port :: handle(), Reason :: term()}
-                 | {subproc_exit, Port :: handle(), subproc_unix:exit_code()}
-                 | {subproc_signal, Port :: handle(),
-                     {subproc_unix:signal_number(),
-                      subproc_unix:signal_name()}}.
-
--type posix() :: inet:posix().
 
 -record(opts, {
   mode :: list | binary | undefined,
   active :: true | false | once | undefined,
   packet :: raw | 1 | 2 | 4 | line | undefined,
   packet_size :: pos_integer() | undefined,
-  pid :: subproc_unix:os_pid() | undefined
+  pid :: subproc:os_pid() | undefined
 }).
 
 %%%---------------------------------------------------------------------------
@@ -66,12 +45,12 @@
 
 %% @doc Open a port for reading/writing to/from subprocess.
 
--spec open(STDIO, [option() | {pid, subproc_unix:os_pid()}]) ->
-  {ok, handle()} | {error, badarg | system_limit | posix()}
+-spec open(STDIO, [subproc:read_option() | {pid, subproc:os_pid()}]) ->
+  {ok, subproc:handle()} | {error, badarg | system_limit | subproc:posix()}
   when STDIO :: {bidir, FDRW} | {in, FDR} | {out, FDW} | {in_out, {FDR, FDW}},
-       FDRW :: subproc_unix:os_fd(),
-       FDR :: subproc_unix:os_fd(),
-       FDW :: subproc_unix:os_fd().
+       FDRW :: subproc:os_fd(),
+       FDR :: subproc:os_fd(),
+       FDW :: subproc:os_fd().
 
 open(STDIO, Options) ->
   Defaults = #opts{
@@ -146,7 +125,7 @@ valid_stdio(STDIO) ->
 %%   To wait for subprocess to terminate, call `close(Port, read)' or
 %%   `close(Port, read_write)' and then call `recv(Port, _)' in loop.
 
--spec close(handle()) ->
+-spec close(subproc:handle()) ->
   ok.
 
 close(Port) ->
@@ -164,7 +143,7 @@ close(Port) ->
 %% @doc Close reading and/or writing descriptors, but don't terminate the
 %%   subprocess.
 
--spec close(handle(), read | write | read_write) ->
+-spec close(subproc:handle(), read | write | read_write) ->
   ok | {error, badarg}.
 
 close(Port, How) ->
@@ -185,8 +164,8 @@ close(Port, How) ->
 
 %% @doc Send data to the subprocess.
 
--spec send(handle(), iolist()) ->
-  ok | {error, closed | posix()}.
+-spec send(subproc:handle(), iolist()) ->
+  ok | {error, closed | subproc:posix()}.
 
 send(Port, Data) ->
   port_command(Port, Data),
@@ -202,17 +181,20 @@ send(Port, Data) ->
 %%     <li>`einval' -- socket is in active mode</li>
 %%   </ul>
 
--spec recv(handle(), non_neg_integer()) ->
+-spec recv(subproc:handle(), non_neg_integer()) ->
     {ok, Data :: string() | binary()}
   | eof
-  | {error, closed | posix()}.
+  | {terminated, Exit | Signal}
+  | {error, closed | subproc:posix()}
+  when Exit :: {exit, subproc:exit_code()},
+       Signal :: {signal, subproc:signal_number(), subproc:signal_name()}.
 
 recv(Port, Length) ->
   recv(Port, Length, infinity).
 
 %% @doc Read data from the subprocess.
 %%
-%%   Special errors:
+%%   Notable errors:
 %%   <ul>
 %%     <li>`timeout' -- nothing to read</li>
 %%     <li>`closed' -- reading descriptor closed</li>
@@ -221,10 +203,13 @@ recv(Port, Length) ->
 %%     <li>`einval' -- socket is in active mode</li>
 %%   </ul>
 
--spec recv(handle(), non_neg_integer(), timeout()) ->
+-spec recv(subproc:handle(), non_neg_integer(), timeout()) ->
     {ok, Data :: string() | binary()}
   | eof
-  | {error, closed | timeout | posix()}.
+  | {terminated, Exit | Signal}
+  | {error, closed | timeout | subproc:posix()}
+  when Exit :: {exit, subproc:exit_code()},
+       Signal :: {signal, subproc:signal_number(), subproc:signal_name()}.
 
 recv(Port, Length, infinity = _Timeout) ->
   port_control(Port, 4, <<Length:32>>),
@@ -257,7 +242,7 @@ recv(Port, Length, Timeout) when is_integer(Timeout) ->
 
 %% @doc Set one or more options for a port.
 
--spec setopts(handle(), [option()]) ->
+-spec setopts(subproc:handle(), [subproc:read_option()]) ->
   ok | {error, badarg}.
 
 setopts(Port, Options) ->
@@ -277,9 +262,9 @@ setopts(Port, Options) ->
 
 %% @doc Get one or more options for a port.
 
--spec getopts(handle(), [option_name() | pid]) ->
-  {ok, [option() | {pid, PID}]} | {error, badarg}
-  when PID :: subproc_unix:os_pid() | undefined.
+-spec getopts(subproc:handle(), [option_name() | pid]) ->
+  {ok, [subproc:read_option() | {pid, PID}]} | {error, badarg}
+  when PID :: subproc:os_pid() | undefined.
 
 getopts(Port, Options) ->
   try lists:foldr(fun get_option/2, {[], ioctl_getopts(Port)}, Options) of
@@ -294,7 +279,7 @@ getopts(Port, Options) ->
 
 -spec get_option(option_name() | pid, Acc :: {[Option], #opts{}}) ->
   {[Option], #opts{}}
-  when Option :: option() | {pid, subproc_unix:os_pid() | undefined}.
+  when Option :: subproc:read_option() | {pid, subproc:os_pid() | undefined}.
 
 get_option(mode = Name, {OptList, Opts = #opts{mode = Value}}) ->
   {[{Name, Value} | OptList], Opts};
@@ -309,7 +294,7 @@ get_option(pid = Name, {OptList, Opts = #opts{pid = Value}}) ->
 
 %% @doc Assign a new owner to a port.
 
--spec controlling_process(handle(), pid()) ->
+-spec controlling_process(subproc:handle(), pid()) ->
   ok | {error, not_owner | closed | badarg}.
 
 controlling_process(Port, Pid) ->
@@ -343,8 +328,20 @@ controlling_process(Port, Pid) ->
 -spec format_error(Reason :: term()) ->
   string().
 
-format_error(_) ->
-  "TODO".
+format_error(badarg) ->
+  "bad argument";
+format_error(closed) ->
+  "file descriptor closed";
+format_error(timeout) ->
+  "operation timed out";
+format_error(not_owner) ->
+  "not the owner of the port";
+
+format_error(system_limit) ->
+  "too many spawned ports";
+
+format_error(PosixError) ->
+  inet:format_error(PosixError).
 
 %%%---------------------------------------------------------------------------
 %%% port monitor
@@ -355,7 +352,7 @@ format_error(_) ->
 %%   If the ports dies silently before sending an ACK/NAK, `{error,closed}'
 %%   is returned.
 
--spec reply_wait(handle(), timeout()) ->
+-spec reply_wait(subproc:handle(), timeout()) ->
   Reply :: term() | {error, closed}.
 
 reply_wait(Port, Interval) ->
@@ -376,7 +373,8 @@ reply_wait(Port, Interval) ->
 %%
 %%   Reinitializing a port is not possible and causes `error:badarg' crash.
 
--spec ioctl_setfd(handle(), tuple(), subproc_unix:os_pid() | undefined) ->
+-spec ioctl_setfd(subproc:handle(), subproc:stdio(),
+                  subproc:os_pid() | undefined) ->
   ok.
 
 ioctl_setfd(Port, STDIO, PID) ->
@@ -398,7 +396,7 @@ ioctl_setfd(Port, STDIO, PID) ->
 %%   PID, even if defined, is ignored, as it's only allowed to be set with
 %%   {@link ioctl_setfd/3}.
 
--spec ioctl_setopts(handle(), #opts{}) ->
+-spec ioctl_setopts(subproc:handle(), #opts{}) ->
   ok.
 
 ioctl_setopts(Port, Options) ->
@@ -457,7 +455,7 @@ setopts_packet_size(#opts{packet_size = Size}) -> <<Size:32>>.
 
 %% @doc Read options and PID from port.
 
--spec ioctl_getopts(handle()) ->
+-spec ioctl_getopts(subproc:handle()) ->
   #opts{}.
 
 ioctl_getopts(Port) ->
@@ -505,7 +503,7 @@ getopts_packet_mode(5) -> line.
 %% @doc Decode PID.
 
 -spec getopts_pid(V :: integer()) ->
-  subproc_unix:os_pid() | undefined.
+  subproc:os_pid() | undefined.
 
 getopts_pid(0) -> undefined;
 getopts_pid(PID) -> PID.
@@ -519,7 +517,7 @@ getopts_pid(PID) -> PID.
 
 %% @doc Check if the list of options is valid.
 
--spec valid_options([option() | {pid, subproc_unix:os_pid()}]) ->
+-spec valid_options([subproc:read_option() | {pid, subproc:os_pid()}]) ->
   boolean().
 
 valid_options(Options) ->
@@ -530,7 +528,7 @@ valid_options(Options) ->
 
 %% @doc Convert a list of options to a usable structure.
 
--spec options([option() | {pid, subproc_unix:os_pid()}], #opts{}) ->
+-spec options([subproc:read_option() | {pid, subproc:os_pid()}], #opts{}) ->
   {ok, #opts{}} | {error, badarg}.
 
 options(Options, Defaults) ->
@@ -542,7 +540,7 @@ options(Options, Defaults) ->
 
 %% @doc Fold workhorse for {@link options/2}.
 
--spec option(option() | {pid, subproc_unix:os_pid()}, #opts{}) ->
+-spec option(subproc:read_option() | {pid, subproc:os_pid()}, #opts{}) ->
   #opts{}.
 
 option(Mode, Opts) when Mode == list; Mode == binary ->

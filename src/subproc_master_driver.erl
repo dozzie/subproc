@@ -40,7 +40,7 @@
 -type posix() :: inet:posix().
 
 -type event_message() :: {subproc_sup, handle(), EventData :: binary(),
-                           FDs :: [subproc_unix:os_fd(), ...]}.
+                           FDs :: [subproc:os_fd(), ...]}.
 
 -type request() :: binary() | iolist().
 
@@ -163,7 +163,7 @@ open_option(no_shutdown_kill, {Timeout, _OldKillFlag}) ->
 %% @doc Get pid of unix subprocess supervisor.
 
 -spec pidof(handle()) ->
-  subproc_unix:os_pid().
+  subproc:os_pid().
 
 pidof(Port) ->
   <<PID:32>> = port_control(Port, 1, <<>>),
@@ -207,24 +207,24 @@ close(Port) ->
 %%   group on leader's termination.
 
 -spec exec(handle(), file:filename(), [string()], Options :: [Option]) ->
-    {ok, {subproc_id(), subproc_unix:os_pid(), STDIO}}
+    {ok, {subproc_id(), subproc:os_pid(), STDIO}}
   | {error, RequestError | ExecError | EventError | badarg}
   when Option :: {stdio, bidir | in | out | in_out}
                | {type, socket | pipe}
                | stderr_to_stdout
                | pgroup
                | term_pgroup
-               | {termsig, subproc_unix:signal()}
-               | {ignore_signals, [subproc_unix:signal()]}
+               | {termsig, subproc:signal() | close}
+               | {ignore_signals, [subproc:signal()]}
                | {nice, integer()}
                | {user, uid() | user()}
                | {group, gid() | group()}
                | {cd, file:filename()}
                | {argv0, file:filename()},
        STDIO :: {bidir, FDRW} | {in, FDR} | {out, FDW} | {in_out, {FDR, FDW}},
-       FDRW :: subproc_unix:os_fd(),
-       FDR :: subproc_unix:os_fd(),
-       FDW :: subproc_unix:os_fd(),
+       FDRW :: subproc:os_fd(),
+       FDR :: subproc:os_fd(),
+       FDW :: subproc:os_fd(),
        ExecError :: {Stage :: atom(), Error :: posix()},
        RequestError :: atom(),
        EventError :: bad_stdio_mode | unknown_event.
@@ -260,7 +260,7 @@ exec(Port, Command, Args, Options) ->
 %% @doc Wait for an event with result of a freshly sent exec request.
 
 -spec exec_result_event(handle(), subproc_id()) ->
-    {exec, subproc_id(), STDIO :: tuple(), subproc_unix:os_pid()}
+    {exec, subproc_id(), STDIO :: tuple(), subproc:os_pid()}
   | {exec_error, subproc_id(), Stage :: atom(), Error :: posix()}
   | {error, bad_stdio_mode | unknown_event}.
 
@@ -289,7 +289,7 @@ kill(Port, ID) when is_integer(ID) ->
 
 %% @doc Send a kill request to unix subprocess supervisor.
 
--spec kill(handle(), subproc_id(), default | subproc_unix:signal()) ->
+-spec kill(handle(), subproc_id(), default | subproc:signal()) ->
   ok | {error, nxchild | bad_signal | posix() | badarg}.
 
 kill(Port, ID, Signal) when is_integer(ID) ->
@@ -407,18 +407,17 @@ shutdown(Port) ->
   | SignalEvent
   | ShutdownEvent
   | {error, bad_stdio_mode | unknown_event}
-  when ExecEvent :: {exec, subproc_id(), STDIO, subproc_unix:os_pid()},
+  when ExecEvent :: {exec, subproc_id(), STDIO, subproc:os_pid()},
        ExecErrorEvent :: {exec_error, subproc_id(),
                            Stage :: atom(), Error :: posix()},
        ExitEvent :: {exit, subproc_id(), ExitCode :: 0 .. 255},
        SignalEvent :: {signal, subproc_id(),
-                        {subproc_unix:signal_number(),
-                          subproc_unix:signal_name()}},
+                        {subproc:signal_number(), subproc:signal_name()}},
        ShutdownEvent :: {shutdown, AliveChildren :: non_neg_integer()},
        STDIO :: {bidir, FDRW} | {in, FDR} | {out, FDW} | {in_out, {FDR, FDW}},
-       FDRW :: subproc_unix:os_fd(),
-       FDR :: subproc_unix:os_fd(),
-       FDW :: subproc_unix:os_fd().
+       FDRW :: subproc:os_fd(),
+       FDR :: subproc:os_fd(),
+       FDW :: subproc:os_fd().
 
 decode_event({subproc_sup, _Port, EventData, FDs} = _Event) ->
   case EventData of
@@ -544,8 +543,8 @@ build_exec_request(Command, Args, Options) ->
 
 -record(exec, {
   env :: term(), % TODO: define me
-  termsig = close :: close | subproc_unix:signal(),
-  ignore_signals = [] :: [subproc_unix:signal()],
+  termsig = close :: close | subproc:signal(),
+  ignore_signals = [] :: [subproc:signal()],
   stdio = default :: default | bidir | in | out | in_out,
   stderr_to_stdout = false :: boolean(),
   socket = false :: boolean(),
@@ -735,7 +734,7 @@ build_exec_options(Opts = #exec{}) ->
 
 %% @doc Make a signal mask from list of signals (names and/or numbers).
 
--spec make_signal_mask([subproc_unix:signal()], non_neg_integer()) ->
+-spec make_signal_mask([subproc:signal()], non_neg_integer()) ->
   non_neg_integer().
 
 make_signal_mask([] = _SignalList, Mask) ->
@@ -782,7 +781,7 @@ pack_string(String) ->
 
 %% @doc Build a kill request.
 
--spec build_kill_request(subproc_id(), subproc_unix:signal()) ->
+-spec build_kill_request(subproc_id(), subproc:signal()) ->
   request().
 
 build_kill_request(ID, Signal) ->

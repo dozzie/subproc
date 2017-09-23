@@ -32,7 +32,7 @@
 -define(REAP_INTERVAL, 100).
 
 -record(state, {
-  port :: {port(), subproc_unix:os_pid()} | undefined
+  port :: {port(), subproc:os_pid()} | undefined
 }).
 
 %%% }}}
@@ -182,7 +182,7 @@ code_change(_OldVsn, State, _Extra) ->
 
 %% @doc Reap a zombie process after master port's termination.
 
--spec waitpid(subproc_unix:os_pid(), pos_integer()) ->
+-spec waitpid(subproc:os_pid(), pos_integer()) ->
   ok.
 
 waitpid(PID, WaitPidInterval) ->

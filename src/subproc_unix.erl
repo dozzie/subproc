@@ -13,43 +13,6 @@
 %% translation functions
 -export([errno_to_posix/1, signal_name/1, signal_number/1]).
 
--export_type([os_pid/0, os_fd/0, uid/0, gid/0]).
--export_type([posix/0]).
--export_type([exit_code/0, signal/0, signal_name/0, signal_number/0]).
-
-%%%---------------------------------------------------------------------------
-%%% types {{{
-
--type os_pid() :: pos_integer().
-%% PID of an OS-level process.
-
--type os_fd() :: non_neg_integer().
-%% File descriptor, usable for `read(2)', `write(2)', and `close(2)'.
-
--type uid() :: 0 .. 65535.
-%% UID number of a process.
-
--type gid() :: 0 .. 65535.
-%% GID number of a process.
-
--type posix() :: inet:posix().
-%% Atom representation of an `errno' value.
-
--type exit_code() :: 0 .. 255.
-%% Exit code of a process.
-
--type signal() :: signal_number() | signal_name().
-%% Signal representation.
-
--type signal_number() :: 1 .. 31.
-%% Integer value of a signal. Different OSes can assign different meaning to
-%% each number; {@type signal_name()} is a more portable alternative.
-
--type signal_name() :: hup | int | quit | kill | term | usr1 | usr2
-                     | abrt | alrm | stop | cont | atom().
-%% Symbolic name of a signal. Lower case with `"SIG"' prefix stripped.
-
-%%% }}}
 %%%---------------------------------------------------------------------------
 
 -on_load(init/0).
@@ -81,8 +44,11 @@ init() ->
 %%   is returned. If it was killed with a signal, signal's name (atom) is
 %%   returned instead.
 
--spec waitpid(os_pid()) ->
-  {ok, exit_code() | signal_name()} | alive | undefined | {error, badarg}.
+-spec waitpid(subproc:os_pid()) ->
+    {ok, subproc:exit_code() | subproc:signal_name()}
+  | alive
+  | undefined
+  | {error, badarg}.
 
 waitpid(_Pid) ->
   erlang:nif_error(nif_not_loaded).
@@ -92,8 +58,8 @@ waitpid(_Pid) ->
 %%   `{error,badarg}' is returned when a non-integer or a negative integer is
 %%   passed as an argument.
 
--spec close(os_fd()) ->
-  ok | {error, badarg | posix()}.
+-spec close(subproc:os_fd()) ->
+  ok | {error, badarg | subproc:posix()}.
 
 close(_FD) ->
   erlang:nif_error(nif_not_loaded).
@@ -101,7 +67,7 @@ close(_FD) ->
 %% @doc `getuid(2)': get UID with which BEAM VM runs.
 
 -spec getuid() ->
-  uid().
+  subproc:uid().
 
 getuid() ->
   erlang:nif_error(nif_not_loaded).
@@ -109,7 +75,7 @@ getuid() ->
 %% @doc `geteuid(2)': get effective UID with which BEAM VM runs.
 
 -spec geteuid() ->
-  uid().
+  subproc:uid().
 
 geteuid() ->
   erlang:nif_error(nif_not_loaded).
@@ -117,7 +83,7 @@ geteuid() ->
 %% @doc `getgid(2)': get GID with which BEAM VM runs.
 
 -spec getgid() ->
-  gid().
+  subproc:gid().
 
 getgid() ->
   erlang:nif_error(nif_not_loaded).
@@ -125,7 +91,7 @@ getgid() ->
 %% @doc `getegid(2)': get effective GID with which BEAM VM runs.
 
 -spec getegid() ->
-  gid().
+  subproc:gid().
 
 getegid() ->
   erlang:nif_error(nif_not_loaded).
@@ -137,7 +103,7 @@ getegid() ->
 %% @doc Convert numeric value of `errno' to an atom.
 
 -spec errno_to_posix(integer()) ->
-  posix() | unknown.
+  subproc:posix() | unknown.
 
 errno_to_posix(_Errno) ->
   erlang:nif_error(nif_not_loaded).
@@ -147,8 +113,8 @@ errno_to_posix(_Errno) ->
 %%   Function crashes with `error:badarg' when invalid or unknown signal
 %%   number is passed.
 
--spec signal_name(signal_number()) ->
-  signal_name().
+-spec signal_name(subproc:signal_number()) ->
+  subproc:signal_name().
 
 signal_name(_SigNum) ->
   erlang:nif_error(nif_not_loaded).
@@ -158,8 +124,8 @@ signal_name(_SigNum) ->
 %%   Function crashes with `error:badarg' when invalid or unknown signal
 %%   name is passed.
 
--spec signal_number(signal_name()) ->
-  signal_number().
+-spec signal_number(subproc:signal_name()) ->
+  subproc:signal_number().
 
 signal_number(_SigName) ->
   erlang:nif_error(nif_not_loaded).

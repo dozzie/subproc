@@ -40,7 +40,8 @@
 
 -record(opts, {
   port_type = subproc :: subproc | native | raw_fd,
-  native_autoclose = true :: boolean(),
+  autoclose = true :: boolean(),  % `{close, _}'
+  term_close = true :: boolean(), % `{close_on_exit, _}'
   exec_options = [] :: [term()],
   port_options = [] :: [term()]
 }).
@@ -68,12 +69,15 @@ start_link() ->
 
 %% @doc Execute a command as a subprocess under unix supervisor.
 
--spec exec(file:filename(), [string()], [term()]) ->
-  {ok, port() | RawInfo} | {error, bad_owner | badarg | term()}
-  when RawInfo :: {ID, PID, STDIO},
-       ID :: pos_integer(),
-       PID :: subproc_unix:os_pid(),
-       STDIO :: tuple().
+-spec exec(file:filename(), [string()], Options :: [Option]) ->
+    {ok, port() | RawInfo}
+  | {error, bad_owner | badarg | system_limit | ExecError | RequestError}
+  when Option :: subproc:exec_option() | subproc:port_option()
+               | subproc:read_option() | subproc:native_read_option(),
+       RawInfo :: {ID :: subproc_master_driver:subproc_id(),
+                    PID :: subproc:os_pid(), STDIO :: subproc:stdio()},
+       ExecError :: {Stage :: atom(), Error :: subproc:posix()},
+       RequestError :: atom().
 
 exec(Command, Args, Options) ->
   Request = {exec, self(), Command, Args, Options},
@@ -102,9 +106,12 @@ exec(Command, Args, Options) ->
   end.
 
 %% @doc Kill a child process running under unix supervisor.
+%%
+%%   If the child already terminated or the port was not spawned with
+%%   {@link exec/3} or {@link open/2}, `{error, badarg}' is returned.
 
--spec kill(port(), default | subproc_unix:signal()) ->
-  ok | {error, nxchild | subproc_unix:posix() | badarg}.
+-spec kill(port(), default | subproc:signal()) ->
+  ok | {error, badarg | bad_signal | subproc:posix()}.
 
 kill(Port, Signal) ->
   gen_server:call(?MODULE, {kill, Port, Signal}, infinity).
@@ -264,7 +271,7 @@ code_change(_OldVsn, State, _Extra) ->
 
 -spec spawn_port(subproc_master_driver:handle(), file:filename(), [string()],
                  Opts :: #opts{}) ->
-    {subproc, subproc_worker_driver:handle(), subproc_master_driver:id()}
+    {subproc, subproc:handle(), subproc_master_driver:subproc_id()}
   | {native, NativePortStub :: tuple()}
   | {raw_fd, RawFDPortStub :: tuple()}
   | {error, ExecError | WorkerError}
@@ -273,7 +280,7 @@ code_change(_OldVsn, State, _Extra) ->
 
 spawn_port(MasterPort, Command, Args,
            #opts{port_type = PortType, exec_options = ExecOpts,
-                 port_options = PortOpts, native_autoclose = ACFlag}) ->
+                 port_options = PortOpts, autoclose = ACFlag}) ->
   case subproc_master_driver:exec(MasterPort, Command, Args, ExecOpts) of
     {ok, {ID, PID, STDIO}} when PortType == subproc ->
       case subproc_worker_driver:open(STDIO, [{pid, PID} | PortOpts]) of
@@ -317,7 +324,7 @@ close_stdio({in_out, {FDR, FDW}} = _STDIO) ->
   #opts{} | {error, badarg}.
 
 options(Options) ->
-  case lists:foldr(fun option/2, #opts{}, Options) of
+  try lists:foldr(fun option/2, #opts{}, Options) of
     Opts = #opts{port_type = subproc, port_options = PortOpts} ->
       % don't execute a command if it's known to fail at port creation
       case subproc_worker_driver:valid_options(PortOpts) of
@@ -337,6 +344,9 @@ options(Options) ->
     _Opts = #opts{port_type = raw_fd, port_options = [_|_]} ->
       % port options are not allowed when raw FDs are returned
       {error, badarg}
+  catch
+    throw:{error, Reason} ->
+      {error, Reason}
   end.
 
 %% @doc Fold workhorse for {@link options/1}.
@@ -347,8 +357,12 @@ options(Options) ->
 option(subproc, Opts) -> Opts#opts{port_type = subproc};
 option(native,  Opts) -> Opts#opts{port_type = native};
 option(raw_fd,  Opts) -> Opts#opts{port_type = raw_fd};
-option(autoclose,    Opts) -> Opts#opts{native_autoclose = true};
-option(no_autoclose, Opts) -> Opts#opts{native_autoclose = false};
+option({close, true},  Opts) -> Opts#opts{autoclose = true};
+option({close, false}, Opts) -> Opts#opts{autoclose = false};
+option({close, _}, _Opts) -> erlang:throw({error, badarg});
+option({close_on_exit, true},  Opts) -> Opts#opts{term_close = true};
+option({close_on_exit, false}, Opts) -> Opts#opts{term_close = false};
+option({close_on_exit, _}, _Opts) -> erlang:throw({error, badarg});
 option(Option, Opts = #opts{exec_options = EOpts, port_options = POpts}) ->
   case subproc_master_driver:is_option(Option) of
     true  -> Opts#opts{exec_options = [Option | EOpts]};
