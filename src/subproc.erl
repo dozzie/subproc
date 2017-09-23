@@ -289,8 +289,8 @@ exec(Command, Args, Options) ->
   {ok, handle() | port() | stdio()} | {error, badarg | system_limit}
   when Option :: port_option() | read_option() | native_read_option().
 
-open(_STDIO, _Options) ->
-  'TODO'.
+open(STDIO, Options) ->
+  subproc_master:open(STDIO, Options).
 
 %% @doc Send a termination signal to the subprocess and close the associated
 %%   port.
@@ -469,7 +469,7 @@ controlling_process(Port, Pid) ->
   ok.
 
 config_reload() ->
-  'TODO'.
+  subproc_master:reload().
 
 %% }}}
 %%----------------------------------------------------------

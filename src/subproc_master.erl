@@ -18,7 +18,8 @@
 -behaviour(gen_server).
 
 %% public interface
--export([exec/3, kill/2]).
+-export([exec/3, open/2, kill/2]).
+-export([reload/0]).
 -export([format_error/1]).
 
 %% supervision tree API
@@ -80,7 +81,26 @@ start_link() ->
        RequestError :: atom().
 
 exec(Command, Args, Options) ->
-  Request = {exec, self(), Command, Args, Options},
+  request_port({exec, self(), Command, Args, Options}).
+
+%% @doc Open a port from raw file descriptors.
+
+-spec open(subproc:stdio(), Options :: [Option]) ->
+  {ok, port() | RawInfo} | {error, bad_owner | badarg}
+  when Option :: subproc:exec_option() | subproc:port_option()
+               | subproc:read_option() | subproc:native_read_option(),
+       RawInfo :: {ID :: pos_integer(), PID :: subproc:os_pid(),
+                    STDIO :: subproc:stdio()}.
+
+open(STDIO, Options) ->
+  request_port({open, self(), STDIO, Options}).
+
+%% @doc Request a port from the gateway process.
+
+-spec request_port(term()) ->
+  {ok, port() | tuple()} | {error, term()}.
+
+request_port(Request) ->
   case gen_server:call(?MODULE, Request, infinity) of
     {ok, Port} when is_port(Port) ->
       {ok, Port};
@@ -115,6 +135,14 @@ exec(Command, Args, Options) ->
 
 kill(Port, Signal) ->
   gen_server:call(?MODULE, {kill, Port, Signal}, infinity).
+
+%% @doc Reload shutdown options from application's environment.
+
+-spec reload() ->
+  ok.
+
+reload() ->
+  gen_server:call(?MODULE, reload, infinity).
 
 %% @doc Format a reason from error tuple as a usable error message.
 
@@ -193,8 +221,17 @@ handle_call({exec, Owner, Command, Args, OptionList} = _Request, _From,
       {reply, {error, Reason}, State}
   end;
 
+handle_call({open, _Owner, _STDIO, _OptionList} = _Request, _From,
+            State = #state{port = _MasterPort}) ->
+  {reply, {error, 'TODO'}, State};
+
 handle_call({kill, _Port, _Signal} = _Request, _From,
             State = #state{port = _MasterPort}) ->
+  {reply, {error, 'TODO'}, State};
+
+handle_call(reload = _Request, _From,
+            State = #state{port = _MasterPort}) ->
+  % TODO: reload application environment and set shutdown options
   {reply, {error, 'TODO'}, State};
 
 %% unknown calls
