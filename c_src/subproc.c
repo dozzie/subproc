@@ -738,7 +738,7 @@ int cdrv_set_reading(struct subproc_context *context, ErlDrvTermData caller,
     }
   }
 
-  // nothing sent from pending buffer, more data needed
+  // nothing sent from pending buffer (or active mode), more data needed
 
   if (is_recv /* && context->read_mode == passive */) {
     context->reading = 1;
