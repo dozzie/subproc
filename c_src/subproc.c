@@ -129,6 +129,7 @@ static void cdrv_send_binary(struct subproc_context *context, ErlDrvTermData rec
 // }}}
 //----------------------------------------------------------
 
+static int cdrv_check_fd_mode(int fd, unsigned int mode);
 static void cdrv_close_fd(struct subproc_context *context, unsigned int fds);
 static void cdrv_interrupt_write(struct subproc_context *context, int error);
 static void cdrv_interrupt_read(struct subproc_context *context, int error);
@@ -275,9 +276,17 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     if (len != 14)
       return -1;
 
-    context->fdin = unpack32((unsigned char *)buf);
-    context->fdout = unpack32((unsigned char *)(buf + 4));
+    int fdin = unpack32((unsigned char *)buf);
+    int fdout = unpack32((unsigned char *)(buf + 4));
     pid_t pid = unpack32((unsigned char *)(buf + 8));
+
+    // check if the descriptors, if defined, have appropriate modes
+    if ((fdin >= 0 && !cdrv_check_fd_mode(fdin, FDR)) ||
+        (fdout >= 0 && !cdrv_check_fd_mode(fdout, FDW)))
+      return -1;
+
+    context->fdin = fdin;
+    context->fdout = fdout;
     if (pid > 0)
       context->pid = pid;
     context->close_fds = buf[12];
@@ -774,6 +783,16 @@ void cdrv_interrupt_write(struct subproc_context *context, int error)
 {
   if (driver_sizeq(context->erl_port) > 0)
     cdrv_send_error(context->erl_port, context->write_reply_to, error);
+}
+
+static
+int cdrv_check_fd_mode(int fd, unsigned int mode)
+{
+  // O_ACCMODE mask isn't documented in fcntl(2) man page in neither Linux nor
+  // FreeBSD, but SUSv3 says it's there
+  int flags = fcntl(fd, F_GETFL) & O_ACCMODE;
+  return (mode == FDR && (flags == O_RDONLY || flags == O_RDWR)) ||
+         (mode == FDW && (flags == O_WRONLY || flags == O_RDWR));
 }
 
 static
