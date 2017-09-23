@@ -724,8 +724,10 @@ int cdrv_set_reading(struct subproc_context *context, ErlDrvTermData caller,
 
     ssize_t sent = cdrv_flush_packet(context, caller, send_count, recv_size);
     if (sent < 0) {
+      // fatal error (out of memory, packet too big, the like)
       if (error != NULL)
         *error = packet_errno(sent);
+      cdrv_close_fd(context, FDR);
       return -1;
     }
 
