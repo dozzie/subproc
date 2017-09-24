@@ -68,7 +68,13 @@
 enum packet_mode { raw, pfx1, pfx2, pfx4, line };
 enum read_mode { passive, active, once };
 enum data_mode { string, binary };
-enum process_status { process_alive, process_exited, process_killed };
+enum process_status {
+  process_not_initialized,
+  process_undefined,
+  process_alive,
+  process_exited,
+  process_killed
+};
 
 struct packet {
   enum packet_mode packet_mode;
@@ -223,9 +229,9 @@ ErlDrvData cdrv_start(ErlDrvPort port, char *cmd)
   context->close_on_exit = 0;
   // process' status
   context->exit_code = 0;
-  context->process_status = process_alive;
-  // operational data
+  context->process_status = process_not_initialized;
   context->pid = -1;
+  // operational data
   context->erl_port = port;
   context->fdin = context->fdout = -1;
   // flags, options, and buffers for reading
@@ -282,7 +288,7 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
   if (command == 0) { // port initialization {{{
     // setting file descriptors and maybe PID
 
-    if (context->fdin != -1 || context->fdout != -1) // FDs already set
+    if (context->process_status != process_not_initialized)
       return -1;
 
     if (len != 14)
@@ -299,8 +305,12 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
 
     context->fdin = fdin;
     context->fdout = fdout;
-    if (pid > 0)
+    if (pid > 0) {
       context->pid = pid;
+      context->process_status = process_alive;
+    } else {
+      context->process_status = process_undefined;
+    }
     context->close_fds = buf[12];
     context->close_on_exit = buf[13];
 
