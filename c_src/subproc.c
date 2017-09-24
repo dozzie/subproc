@@ -68,6 +68,7 @@
 enum packet_mode { raw, pfx1, pfx2, pfx4, line };
 enum read_mode { passive, active, once };
 enum data_mode { string, binary };
+enum process_status { process_alive, process_exited, process_killed };
 
 struct packet {
   enum packet_mode packet_mode;
@@ -92,6 +93,8 @@ struct subproc_context {
   uint8_t close_fds;
   uint8_t close_on_exit; // either exit() or killed by signal
   uint8_t reading;
+  uint8_t exit_code; // or signal if the process was killed
+  enum process_status process_status;
   enum read_mode read_mode;
   enum data_mode data_mode;
   enum packet_mode packet_mode;
@@ -217,6 +220,8 @@ ErlDrvData cdrv_start(ErlDrvPort port, char *cmd)
   context->read_mode = passive;
   context->fdin = context->fdout = -1;
   context->pid = -1;
+  context->exit_code = 0;
+  context->process_status = process_alive;
   context->read_mode = passive;
   context->data_mode = string;
   context->packet_mode = raw;
@@ -477,7 +482,56 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     return 0;
   } // }}}
 
-  // TODO: "child terminated" notification
+  if (command == 6) { // subprocess terminated {{{
+    if (len != 2)
+      return -1;
+
+    if (context->process_status != process_alive)
+      return -1;
+
+    switch (buf[0]) {
+      case 1: context->process_status = process_exited; break;
+      case 2: context->process_status = process_killed; break;
+      default: return -1;
+    }
+    context->exit_code = buf[1];
+
+    if (context->close_on_exit) {
+      // TODO: read all pending data from `context->fdin'
+      // TODO: replace interrupt with returning pending read data -> EOF ->
+      // termination info
+      cdrv_interrupt_read(context, ERROR_CLOSED);
+      cdrv_interrupt_write(context, ERROR_CLOSED);
+      cdrv_close_fd(context, FDR | FDW);
+      // TODO: set `context->pid' to -1?
+
+      if (context->read_mode == active || context->read_mode == once) {
+        // FIXME: with pending data from `context->fdin', do this only in
+        // active mode
+
+        if (context->process_status == process_exited) {
+          ErlDrvTermData reply[] = {
+            ERL_DRV_UINT, (ErlDrvUInt)context->exit_code
+          };
+
+          cdrv_send_active(context->erl_port, "subproc_exit", reply,
+                           sizeof(reply) / sizeof(reply[0]), 1);
+        } else { // context->process_status == process_killed
+          // TODO: make a tuple {SigNum :: integer(), SigName :: atom()}
+          ErlDrvTermData reply[] = {
+            ERL_DRV_UINT, (ErlDrvUInt)context->exit_code
+          };
+
+          cdrv_send_active(context->erl_port, "subproc_signal", reply,
+                           sizeof(reply) / sizeof(reply[0]), 1);
+        }
+
+        driver_failure_eof(context->erl_port);
+      }
+    }
+
+    return 0;
+  } // }}}
 
   return -1;
 }

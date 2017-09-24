@@ -341,13 +341,18 @@ handle_info({subproc_sup, MasterPort, _EventData, _FDs} = Message,
   % NOTE: `exec' and `exec_error' messages can only arrive on exec request,
   % and we don't have such requests running asynchronously
   case subproc_master_driver:decode_event(Message) of
-    {TermType, ID, _TermData} when TermType == exit; TermType == signal ->
+    {TermType, ID, TermData} when TermType == exit; TermType == signal ->
       % subprocess terminated; `TermData' interpretation:
       %   `TermType = exit': `ExitCode'
       %   `TermType = signal': `{SigNum, SigName}'
       case ets:lookup(Registry, ID) of
         [{ID, Port, subproc = _PortType}] ->
-          % TODO: inform `Port' (`subproc_worker_driver:terminated()' or so)
+          try
+            unlink(Port),
+            subproc_worker_driver:terminated(Port, {TermType, TermData})
+          catch
+            _:_ -> ignore
+          end,
           ets:delete(Registry, ID),
           ets:delete(Registry, Port);
         [{ID, _Port, native = _PortType}] ->

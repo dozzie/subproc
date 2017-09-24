@@ -16,7 +16,7 @@
 %% public interface
 -export([open/2, close/1, close/2]).
 -export([send/2, recv/2, recv/3]).
--export([setopts/2, getopts/2, controlling_process/2]).
+-export([setopts/2, getopts/2, controlling_process/2, terminated/2]).
 -export([valid_options/1]).
 -export([format_error/1]).
 
@@ -303,6 +303,22 @@ get_option(packet_size = Name, {OptList, Opts = #opts{packet_size = Value}}) ->
 get_option(pid = Name, {OptList, Opts = #opts{pid = Value}}) ->
   {[{Name, Value} | OptList], Opts}.
 
+%% @doc Inform the port that its child process terminated.
+
+-spec terminated(subproc:handle(), Exit | Signal) ->
+  ok | {error, badarg}
+  when Exit :: {exit, subproc:exit_code()},
+       Signal :: {signal, subproc:signal_number(), subproc:signal_name()}.
+
+terminated(Port, {_, _} = TermInfo) ->
+  % this function is called from owner of master port, try hard not to die on
+  % closed port here
+  try ioctl_terminated(Port, TermInfo) of
+    _ -> ok
+  catch
+    _:_ -> {error, badarg}
+  end.
+
 %% @doc Assign a new owner to a port.
 
 -spec controlling_process(subproc:handle(), pid()) ->
@@ -409,6 +425,20 @@ ioctl_setfd(Port, STDIO, PID, AutoClose, CloseOnExit) ->
   end,
   Request = <<FDR:32, FDW:32, PIDNum:32, AutoCloseFlag:8, CloseOnExitFlag:8>>,
   port_control(Port, 0, Request),
+  ok.
+
+%% @doc Inform the port that its child process terminated.
+
+-spec ioctl_terminated(subproc:handle(), Exit | Signal) ->
+  ok
+  when Exit :: {exit, subproc:exit_code()},
+       Signal :: {signal, subproc:signal_number(), subproc:signal_name()}.
+
+ioctl_terminated(Port, {exit, ExitCode}) ->
+  port_control(Port, 6, <<1:8, ExitCode:8>>),
+  ok;
+ioctl_terminated(Port, {signal, {SigNum, _SigName}}) ->
+  port_control(Port, 6, <<2:8, SigNum:8>>),
   ok.
 
 %% @doc Set port options.
