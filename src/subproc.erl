@@ -249,6 +249,9 @@
 %%   When `{type,socket}' is specified without accompanying `{stdio,_}'
 %%   option, `{stdio,bidir}' {@type exec_option()} is set as the default.
 %%
+%%   Options list is treated in proplist manner: the earlier options take
+%%   the precedence.
+%%
 %% @see open/2
 
 -spec exec(file:filename(), [string()], Options :: [Option]) ->
@@ -282,6 +285,9 @@ exec(Command, Args, Options) ->
 %%
 %%   In case of an error, the caller is responsible for closing the
 %%   descriptors.
+%%
+%%   Options list is treated in proplist manner: the earlier options take
+%%   the precedence.
 %%
 %% @see exec/3
 
@@ -418,6 +424,9 @@ recv(Port, Length, Timeout) ->
 %%
 %%   See {@type message()} for messages in `{active,true}' and `{active,once}'
 %%   modes.
+%%
+%%   Options list is treated in proplist manner: the earlier options take
+%%   the precedence.
 
 -spec setopts(handle(), Options :: [Option]) ->
   ok | {error, badarg}
@@ -432,6 +441,9 @@ setopts(Port, Options) ->
   end.
 
 %% @doc Read one or more port options.
+%%
+%%   Options are returned in the same order as their names in argument
+%%   (duplicates are allowed).
 
 -spec getopts(handle(), Options :: [OptionName]) ->
   {ok, [Option]} | {error, badarg}
