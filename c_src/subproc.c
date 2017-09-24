@@ -90,19 +90,23 @@ struct packet {
 };
 
 struct subproc_context {
+  // flags
   uint8_t close_fds;
   uint8_t close_on_exit; // either exit() or killed by signal
   uint8_t reading;
   uint8_t exit_code; // or signal if the process was killed
-  enum process_status process_status;
+  enum process_status process_status; // how to interpret exit_code
+  // how to read data (active/passive, packet format, return format)
   enum read_mode read_mode;
   enum data_mode data_mode;
   enum packet_mode packet_mode;
   size_t max_packet_size;
   struct packet packet;
+  // OS internals
   int fdin;
   int fdout;
   pid_t pid;
+  // Erlang owner and reply-to addresses
   ErlDrvPort erl_port;
   ErlDrvTermData write_reply_to;
   ErlDrvTermData read_reply_to;
@@ -214,19 +218,22 @@ ErlDrvData cdrv_start(ErlDrvPort port, char *cmd)
   struct subproc_context *context =
     driver_alloc(sizeof(struct subproc_context));
 
+  // port flags
   context->close_fds = 0;
   context->close_on_exit = 0;
-  context->reading = 0;
-  context->read_mode = passive;
-  context->fdin = context->fdout = -1;
-  context->pid = -1;
+  // process' status
   context->exit_code = 0;
   context->process_status = process_alive;
+  // operational data
+  context->pid = -1;
+  context->erl_port = port;
+  context->fdin = context->fdout = -1;
+  // flags, options, and buffers for reading
+  context->reading = 0;
   context->read_mode = passive;
   context->data_mode = string;
   context->packet_mode = raw;
   context->max_packet_size = MAX_PACKET_SIZE;
-  context->erl_port = port;
   packet_init(&context->packet);
 
   // port_control() should return binaries
