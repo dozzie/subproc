@@ -34,9 +34,14 @@ include erlang.install.mk
 # NOTE: appending an empty string is a way make a no-op assignment, as
 # target-specific export needs an assignment
 app-c_src: export CC +=
-app-c_src: export CFLAGS +=
 app-c_src: export CPPFLAGS +=
+ifneq ($(devel),)
+app-c_src: export CFLAGS := $(filter-out -O%,-g $(CFLAGS))
+app-c_src: export LDFLAGS := $(filter-out -O%,-g $(LDFLAGS))
+else
+app-c_src: export CFLAGS +=
 app-c_src: export LDFLAGS +=
+endif
 app-c_src: export LDLIBS +=
 app-c_src: export OUTDIR = $(CURDIR)/priv
 ifeq ($(PLATFORM),linux)
