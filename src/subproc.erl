@@ -183,9 +183,10 @@
 %%
 %% Most notable errors:
 %% <ul>
-%%   <li>`{error,closed}' -- last message before EOF was incomplete</li>
-%%   <li>`{error,emsgsize}' -- message was larger than `packet_size'
-%%       {@type read_option()}</li>
+%%   <li>`{subproc_error,Port,closed}' -- last message before EOF was
+%%       incomplete</li>
+%%   <li>`{subproc_error,Port,emsgsize}' -- message was larger than
+%%       `packet_size' {@type read_option()}</li>
 %% </ul>
 
 -type posix() :: inet:posix().
@@ -326,9 +327,12 @@ close(Port, How) ->
   subproc_worker_driver:close(Port, How).
 
 %% @doc Send to the subprocess its default termination signal.
+%%
+%%   <b>NOTE</b> This function also works for native ports spawned with
+%%   {@link exec/3}.
 
 -spec signal(handle()) ->
-  ok | {error, closed | badarg | posix()}.
+  ok | {error, badarg | posix()}.
 
 signal(Port) ->
   signal(Port, default).
@@ -337,6 +341,9 @@ signal(Port) ->
 %%
 %%   If the subprocess already terminated or the port was not spawned with
 %%   {@link exec/3} or {@link open/2}, `{error, badarg}' is returned.
+%%
+%%   <b>NOTE</b> This function also works for native ports spawned with
+%%   {@link exec/3}.
 
 -spec signal(handle(), signal() | default) ->
   ok | {error, badarg | bad_signal | posix()}.
