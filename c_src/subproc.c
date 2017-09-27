@@ -1309,9 +1309,10 @@ static void* packet_buffer(struct packet *ctx, size_t *size)
 
   switch (ctx->packet_mode) {
     case raw:
-      // NOTE: reading raw packets with unspecified length should never pass
-      // through here
-      *size = ctx->target_size - ctx->buffer_used;
+      if (ctx->target_size > 0)
+        *size = ctx->target_size - ctx->buffer_used;
+      else
+        *size = ctx->buffer->orig_size - ctx->buffer_used;
       return ctx->buffer->orig_bytes + ctx->buffer_used;
 
     case pfx1:
@@ -1360,8 +1361,11 @@ static int32_t packet_update_read(struct packet *ctx, size_t len)
   switch (ctx->packet_mode) {
     case raw:
       ctx->buffer_used += len;
-      return (ctx->buffer_used == ctx->target_size) ?
-               ctx->target_size : PKT_ERR_NOT_READY;
+      if (ctx->target_size == 0 || ctx->buffer_used == ctx->target_size) {
+        ctx->target_size = ctx->buffer_used;
+        return ctx->target_size;
+      }
+      return PKT_ERR_NOT_READY;
 
     case pfx1:
     case pfx2:
