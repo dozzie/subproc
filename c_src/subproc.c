@@ -10,6 +10,7 @@
 #include <sys/uio.h>
 #include <sys/socket.h>
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #include <errno.h>
 #include <limits.h>
 #include <string.h>
@@ -56,8 +57,9 @@
 #define READ_ACTIVE   0
 
 // argument for `cdrv_close_fd()'; can be OR-ed
-#define FDR 0x01
-#define FDW 0x02
+#define FDR             0x01
+#define FDW             0x02
+#define FDR_KEEP_PACKET 0x04
 
 // }}}
 //----------------------------------------------------------
@@ -74,6 +76,13 @@ enum process_status {
   process_alive,
   process_exited,
   process_killed
+};
+// shutdown sequence
+enum shutdown_sequence {
+  still_running,  // normal operations
+  return_data,  // return whatever pending data was ready to read
+  return_exit,  // return `{exit,Code}' or `{signal,SigNum}'
+  stopped       // stop the port altogether
 };
 
 struct packet {
@@ -102,6 +111,10 @@ struct subproc_context {
   uint8_t reading;
   uint8_t exit_code; // or signal if the process was killed
   enum process_status process_status; // how to interpret exit_code
+  // shutdown sequence FSM
+  enum shutdown_sequence shutdown_sequence;
+  ErlDrvBinary *output_pending;
+  char *output_start;
   // how to read data (active/passive, packet format, return format)
   enum read_mode read_mode;
   enum data_mode data_mode;
@@ -148,6 +161,11 @@ static void cdrv_interrupt_write(struct subproc_context *context, int error);
 static void cdrv_interrupt_read(struct subproc_context *context, int error);
 static int  cdrv_set_reading(struct subproc_context *context, ErlDrvTermData caller, int is_recv, size_t recv_size, int *error);
 static void cdrv_stop_reading(struct subproc_context *context);
+
+// shutdown procedure helpers
+static void   cdrv_shutdown_initiate(struct subproc_context *context);
+static size_t cdrv_shutdown_send_data(struct subproc_context *context, ErlDrvTermData receiver, size_t read_size, size_t nmsg);
+static void   cdrv_shutdown_send_exit(struct subproc_context *context, ErlDrvTermData receiver);
 
 // all of these are and smaller than PKT_ERR_NOT_READY
 #define PKT_ERR_NOT_READY       -1
@@ -231,6 +249,10 @@ ErlDrvData cdrv_start(ErlDrvPort port, char *cmd)
   context->exit_code = 0;
   context->process_status = process_not_initialized;
   context->pid = -1;
+  // shutdown procedure fields
+  context->shutdown_sequence = still_running;
+  context->output_pending = NULL;
+  context->output_start = NULL;
   // operational data
   context->erl_port = port;
   context->fdin = context->fdout = -1;
@@ -259,6 +281,9 @@ void cdrv_stop(ErlDrvData drv_data)
 
   //packet_free(&context->packet); // called by cdrv_close_fd()
   cdrv_close_fd(context, FDR | FDW);
+
+  if (context->output_pending != NULL)
+    driver_free_binary(context->output_pending);
 
   driver_free(context);
 }
@@ -386,6 +411,33 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
 
     if (context->read_mode != passive) {
       // one of the active modes
+
+      // check for shutdown sequence
+      switch (context->shutdown_sequence) {
+        case return_data:
+          if (context->read_mode == active) {
+            if (cdrv_shutdown_send_data(context, ERL_PID_DOESNT_MATTER, 0, 0) > 0)
+              // we still need to send EOF
+              cdrv_shutdown_send_data(context, ERL_PID_DOESNT_MATTER, 0, 0);
+            // and now send also exit/signal status
+            cdrv_shutdown_send_exit(context, ERL_PID_DOESNT_MATTER);
+            context->shutdown_sequence = stopped;
+          } else { // context->read_mode == once
+            if (cdrv_shutdown_send_data(context, ERL_PID_DOESNT_MATTER, 0, 1) == 0)
+              // EOF sent, next will be the exit/signal status
+              context->shutdown_sequence = return_exit;
+          }
+          return 0;
+        case return_exit:
+          cdrv_shutdown_send_exit(context, ERL_PID_DOESNT_MATTER);
+          context->shutdown_sequence = stopped;
+          return 0;
+        default: // still_running or stopped
+          // NOTE: when (shutdown_sequence == stopped), the descriptors are
+          // already closed for a long time
+          break; // proceed normally
+      }
+
       int error;
       int result = cdrv_set_reading(context, ERL_PID_DOESNT_MATTER,
                                     READ_ACTIVE, 0, &error);
@@ -471,6 +523,23 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       return 0;
     }
 
+    // check for shutdown sequence
+    switch (context->shutdown_sequence) {
+      case return_data:
+        if (cdrv_shutdown_send_data(context, caller, read_size, 1) == 0)
+          // EOF sent, next will be the exit/signal status
+          context->shutdown_sequence = return_exit;
+        return 0;
+      case return_exit:
+        cdrv_shutdown_send_exit(context, caller);
+        context->shutdown_sequence = stopped;
+        return 0;
+      default: // still_running or stopped
+        // NOTE: when (shutdown_sequence == stopped), the descriptors are
+        // already closed for a long time
+        break; // proceed normally
+    }
+
     int error;
     if (cdrv_set_reading(context, caller, READ_RECV, read_size, &error) != 0)
       cdrv_send_error(context->erl_port, caller, error);
@@ -512,40 +581,80 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       default: return -1;
     }
     context->exit_code = buf[1];
+    // TODO: set `context->pid' to -1?
 
-    if (context->close_on_exit) {
-      // TODO: read all pending data from `context->fdin'
-      // TODO: replace interrupt with returning pending read data -> EOF ->
-      // termination info
-      cdrv_interrupt_read(context, ERROR_CLOSED);
-      cdrv_interrupt_write(context, ERROR_CLOSED);
-      cdrv_close_fd(context, FDR | FDW);
-      // TODO: set `context->pid' to -1?
+    if (!context->close_on_exit) {
+      // FIXME: should exit info be sent in active mode when `fdin' is closed?
 
-      if (context->read_mode == active || context->read_mode == once) {
-        // FIXME: with pending data from `context->fdin', do this only in
-        // active mode
+      // if we're not supposed to close the descriptors, the case is simple:
+      // return/send
 
-        if (context->process_status == process_exited) {
-          ErlDrvTermData reply[] = {
-            ERL_DRV_UINT, (ErlDrvUInt)context->exit_code
-          };
-
-          cdrv_send_active(context->erl_port, "subproc_exit", reply,
-                           sizeof(reply) / sizeof(reply[0]), 1);
-        } else { // context->process_status == process_killed
-          // TODO: make a tuple {SigNum :: integer(), SigName :: atom()}
-          ErlDrvTermData reply[] = {
-            ERL_DRV_UINT, (ErlDrvUInt)context->exit_code
-          };
-
-          cdrv_send_active(context->erl_port, "subproc_signal", reply,
-                           sizeof(reply) / sizeof(reply[0]), 1);
-        }
-
-        driver_failure_eof(context->erl_port);
+      if (context->read_mode == passive && !context->reading) {
+        // nobody to send the termination info to, mark it as a pending
+        // operation
+        context->shutdown_sequence = return_exit;
+      } else {
+        // send termination info and proceed with reading as usual
+        cdrv_shutdown_send_exit(context, context->read_reply_to);
+        context->shutdown_sequence = stopped;
       }
+
+      if (context->read_mode != active) {
+        cdrv_stop_reading(context);
+        context->read_mode = passive;
+      }
+
+      return 0;
     }
+
+    // XXX: at this point, close_on_exit flag is set and
+    // (shutdown_sequence == still_running)
+
+    if (context->fdin >= 0) {
+      cdrv_shutdown_initiate(context);
+
+      if (context->read_mode == passive && !context->reading) {
+        // passive mode and no recv() in progress (nobody to send data to),
+        // just mark the fact that we still need to send data+EOF
+        context->shutdown_sequence = return_data;
+      } else if (context->read_mode == passive || context->read_mode == once) {
+        // read/send exactly one packet (if passive mode, recv() is in
+        // progress and it has target packet size already set)
+
+        size_t sent =
+          cdrv_shutdown_send_data(context, context->read_reply_to, 0, 1);
+
+        // if a data message was sent, EOF is still to be sent;
+        // if EOF was sent (sent == 0), next is exit/signal message
+        context->shutdown_sequence = (sent > 0) ? return_data : return_exit;
+      } else { // (context->read_mode == active)
+        // read/send all packets
+        size_t sent =
+          cdrv_shutdown_send_data(context, ERL_PID_DOESNT_MATTER, 0, 0);
+
+        // at least one data message was sent, send also EOF
+        if (sent > 0)
+          cdrv_shutdown_send_data(context, ERL_PID_DOESNT_MATTER, 0, 0);
+
+        // EOF sent, so next is exit/signal message
+        //context->shutdown_sequence = return_exit; // will be changed later
+
+        cdrv_shutdown_send_exit(context, ERL_PID_DOESNT_MATTER);
+        context->shutdown_sequence = stopped;
+      }
+
+      // no more poll() on fdin, all recv() calls will be satisfied within
+      // cdrv_control() callback
+      cdrv_stop_reading(context);
+    }
+
+    // a recv() already got a proper reply above
+    //cdrv_interrupt_read(context, ERROR_CLOSED);
+    cdrv_interrupt_write(context, ERROR_CLOSED);
+    cdrv_close_fd(context, FDR_KEEP_PACKET | FDR | FDW);
+
+    if (context->read_mode == active)
+      driver_failure_eof(context->erl_port);
 
     return 0;
   } // }}}
@@ -878,7 +987,7 @@ void cdrv_close_fd(struct subproc_context *context, unsigned int fds)
     set_busy_port(context->erl_port, 0);
   }
 
-  if ((fds & FDR) == FDR) {
+  if ((fds & (FDR | FDR_KEEP_PACKET)) == FDR) {
     // TODO: maybe flush data from context->packet?
     packet_free(&context->packet);
   }
@@ -1160,6 +1269,202 @@ static void cdrv_send_binary(struct subproc_context *context,
     if (context->read_mode == once) {
       cdrv_stop_reading(context);
       context->read_mode = passive;
+    }
+  }
+}
+
+// }}}
+//----------------------------------------------------------------------------
+// "subprocess terminated" shutdown sequence {{{
+
+// caller is expected to call cdrv_close_fd(context, FDR | FDR_KEEP_PACKET)
+static
+void cdrv_shutdown_initiate(struct subproc_context *context)
+{
+  int size_left = 0;
+  if (context->fdin >= 0)
+    ioctl(context->fdin, FIONREAD, &size_left);
+
+  if (size_left > 0) {
+    // TODO: skip allocating a binary if (size_left < DEFAULT_BUFFER_SIZE) and
+    // fit the data into packet's pending buffer
+    context->output_pending = driver_alloc_binary(size_left);
+    if (context->output_pending == NULL)
+      driver_failure_posix(context->erl_port, ENOMEM);
+    // assume that read() returns the same as `size_left', i.e. nothing else
+    // suddenly read data from our descriptor
+    read(context->fdin, context->output_pending->orig_bytes, size_left);
+    context->output_start = context->output_pending->orig_bytes;
+  }
+}
+
+// send nmsg messages with payload to receiver
+// EOF/{error,closed} message is only sent when no data packets were sent
+// function returns number of data packets sent
+static
+size_t cdrv_shutdown_send_data(struct subproc_context *context,
+                               ErlDrvTermData receiver,
+                               size_t read_size, size_t nmsg)
+{
+  // XXX: the only case when this function is called with (read_size > 0) is
+  // when (nmsg == 1)
+
+  size_t count = 0;
+  while (nmsg == 0 || count < nmsg) {
+    int32_t packet_size = PKT_ERR_NOT_READY;
+
+    if (packet_boundary(&context->packet)) {
+      // only now there can be some data in pending buffer
+      packet_size = packet_start_parse(&context->packet, context->packet_mode,
+                                       read_size, context->max_packet_size,
+                                       (context->data_mode == binary));
+
+      // full packet ready from pending data
+      if (packet_size == 0) {
+        cdrv_send_empty_input(context, receiver);
+        ++count;
+        continue;
+      } else if (packet_size > 0) {
+        void *buffer = packet_get_pending(&context->packet);
+        cdrv_send_input(context, receiver, buffer, packet_size, 0);
+        ++count;
+        continue;
+      }
+
+      // NOTE: if (packet_mode == line), it is possible that we're still at
+      // packet boundary here
+    }
+
+    if (packet_size == PKT_ERR_NOT_READY && context->output_pending != NULL) {
+      // packet parsing in progress
+
+      size_t output_left = (context->output_pending->orig_bytes +
+                            context->output_pending->orig_size) -
+                           context->output_start;
+      size_t buffer_size;
+      void *buffer = packet_buffer(&context->packet, &buffer_size);
+
+      if (output_left <= buffer_size) {
+        // all pending data fits in the buffer
+        memcpy(buffer, context->output_start, output_left);
+        packet_size = packet_update_read(&context->packet, output_left);
+
+        driver_free_binary(context->output_pending);
+        context->output_pending = NULL;
+        context->output_start = NULL;
+      } else { // output_left > buffer_size
+        // pass a chunk of pending output
+        memcpy(buffer, context->output_start, buffer_size);
+        packet_size = packet_update_read(&context->packet, buffer_size);
+
+        context->output_start += buffer_size;
+      }
+    }
+
+    if (packet_size < PKT_ERR_NOT_READY) {
+      // fatal error, disregard `count' (if (count == 0), it's OK to send
+      // EOF-like message, and if (count >= 1), we're in active mode anyway)
+      cdrv_send_input(context, receiver, NULL, -1,
+                      packet_errno(packet_size));
+      if (context->output_pending != NULL) {
+        driver_free_binary(context->output_pending);
+        context->output_pending = NULL;
+        context->output_start = NULL;
+      }
+      return 0;
+    } else if (packet_size == PKT_ERR_NOT_READY &&
+               context->output_pending == NULL) {
+      // no more data to feed packet with, so it's an EOF
+      break; // exit the loop
+    } else if (packet_size == PKT_ERR_NOT_READY) {
+      // incomplete packet, but we can still add some data, continue the loop
+    } else if (packet_size == 0) {
+      // got a complete packet, send it and continue the loop
+      cdrv_send_empty_input(context, receiver);
+      ++count;
+    } else { // (packet_size > 0)
+      // got a complete packet, send it and continue the loop
+      char *resbuf;
+      ErlDrvBinary *resbin;
+      packet_get(&context->packet, &resbuf, &resbin);
+      if (resbin != NULL) {
+        cdrv_send_binary(context, receiver, resbin);
+        driver_free_binary(resbin);
+      } else {
+        cdrv_send_input(context, receiver, resbuf, packet_size, 0);
+      }
+      ++count;
+    }
+  }
+
+  if (count == 0) {
+    // if we weren't able to send any data message, send an EOF now
+    if (packet_boundary(&context->packet)) // proper EOF
+      cdrv_send_input(context, receiver, NULL, 0, 0);
+    else if (context->packet.packet_mode == raw &&
+             context->packet.pending_used == 0 &&
+             context->packet.buffer_used == 0 &&
+             context->packet.pending_used == 0)
+      // XXX: special case for recv() with non-zero size and raw packet
+      // type, when we still haven't read anything (packet_boundary() returns
+      // false)
+      // FIXME: move the condition to a function instead of checking the
+      // structure internals directly
+      cdrv_send_input(context, receiver, NULL, 0, 0);
+    else // incomplete packet
+      cdrv_send_input(context, receiver, NULL, -1, ERROR_CLOSED);
+  }
+
+  return count;
+}
+
+static
+void cdrv_shutdown_send_exit(struct subproc_context *context,
+                             ErlDrvTermData receiver)
+{
+  if (context->read_mode == passive) {
+    // this function in passive mode is only called when a recv() was
+    // requested
+    if (context->process_status == process_exited) {
+      ErlDrvTermData reply[] = {
+        ERL_DRV_ATOM, driver_mk_atom("terminated"),
+          ERL_DRV_ATOM, driver_mk_atom("exit"),
+          ERL_DRV_UINT, (ErlDrvUInt)context->exit_code,
+          ERL_DRV_TUPLE, 2,
+        ERL_DRV_TUPLE, 2
+      };
+
+      cdrv_send_data(context->erl_port, receiver,
+                     reply, sizeof(reply) / sizeof(reply[0]));
+    } else { // context->process_status == process_killed
+      ErlDrvTermData reply[] = {
+        ERL_DRV_ATOM, driver_mk_atom("terminated"),
+          ERL_DRV_ATOM, driver_mk_atom("signal"),
+          ERL_DRV_UINT, (ErlDrvUInt)context->exit_code,
+          // TODO: add signal name to this tuple
+          ERL_DRV_TUPLE, 2,
+        ERL_DRV_TUPLE, 2
+      };
+
+      cdrv_send_data(context->erl_port, receiver,
+                     reply, sizeof(reply) / sizeof(reply[0]));
+    }
+  } else {
+    if (context->process_status == process_exited) {
+      ErlDrvTermData reply[] = {
+        ERL_DRV_UINT, (ErlDrvUInt)context->exit_code
+      };
+
+      cdrv_send_active(context->erl_port, "subproc_exit", reply,
+                       sizeof(reply) / sizeof(reply[0]), 1);
+    } else { // context->process_status == process_killed
+      // TODO: make a tuple {SigNum :: integer(), SigName :: atom()}
+      ErlDrvTermData reply[] = {
+        ERL_DRV_UINT, (ErlDrvUInt)context->exit_code
+      };
+
+      cdrv_send_active(context->erl_port, "subproc_signal", reply,
+                       sizeof(reply) / sizeof(reply[0]), 1);
     }
   }
 }
