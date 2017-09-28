@@ -653,9 +653,6 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     cdrv_interrupt_write(context, ERROR_CLOSED);
     cdrv_close_fd(context, FDR_KEEP_PACKET | FDR | FDW);
 
-    if (context->read_mode == active)
-      driver_failure_eof(context->erl_port);
-
     return 0;
   } // }}}
 
