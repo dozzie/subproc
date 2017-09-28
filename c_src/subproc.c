@@ -646,6 +646,10 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       // no more poll() on fdin, all recv() calls will be satisfied within
       // cdrv_control() callback
       cdrv_stop_reading(context);
+    } else if (context->read_mode == active /* && context->fdin < 0 */) {
+      // NOTE: EOF was already sent
+      cdrv_shutdown_send_exit(context, ERL_PID_DOESNT_MATTER);
+      context->shutdown_sequence = stopped;
     }
 
     // a recv() already got a proper reply above
@@ -1206,7 +1210,15 @@ static void cdrv_send_input(struct subproc_context *context,
 
       cdrv_send_active(context->erl_port, "subproc_error", reply,
                        sizeof(reply) / sizeof(reply[0]), 1);
-      cdrv_stop_reading(context);
+      if (context->read_mode == active &&
+          context->shutdown_sequence != stopped) {
+        // we need to stay in active mode, so termination info is sent
+        // properly
+        cdrv_stop_reading(context);
+        context->read_mode = active;
+      } else {
+        cdrv_stop_reading(context);
+      }
       cdrv_close_fd(context, FDR);
     }
   }
