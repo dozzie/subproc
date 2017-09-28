@@ -1039,9 +1039,8 @@ void cdrv_close_fd(struct subproc_context *context, unsigned int fds)
 // NOTE: errors (<0) returned from this function can be translated to `errno'
 // values with packet_errno() function
 static
-ssize_t cdrv_flush_packet(struct subproc_context *context, size_t pkt_count,
-                          ErlDrvTermData receiver,
-                          size_t read_size)
+ssize_t cdrv_flush_packet(struct subproc_context *context, ErlDrvTermData receiver,
+                          size_t pkt_count, size_t read_size)
 {
   ssize_t sent_packets = 0;
 
