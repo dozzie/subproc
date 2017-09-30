@@ -45,8 +45,11 @@
 -type exec_option() :: {stdio, bidir | in | out | in_out}
                      | {type, socket | pipe}
                      | stderr_to_stdout
+                     | {stderr_to_stdout, boolean()}
                      | pgroup
+                     | {pgroup, boolean()}
                      | term_pgroup
+                     | {term_pgroup, boolean()}
                      | {termsig, signal() | close}
                      | {ignore_signals, [signal()]}
                      | {nice, integer()}

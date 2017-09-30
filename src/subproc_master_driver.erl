@@ -588,10 +588,22 @@ exec_option({type, Type}, Opts) when Type == socket; Type == pipe ->
   Opts#exec{socket = (Type == socket)};
 exec_option(stderr_to_stdout, Opts) ->
   Opts#exec{stderr_to_stdout = true};
+exec_option({stderr_to_stdout, true}, Opts) ->
+  Opts#exec{stderr_to_stdout = true};
+exec_option({stderr_to_stdout, false}, Opts) ->
+  Opts#exec{stderr_to_stdout = false};
 exec_option(pgroup, Opts) ->
   Opts#exec{pgroup = true};
+exec_option({pgroup, true}, Opts) ->
+  Opts#exec{pgroup = true};
+exec_option({pgroup, false}, Opts) ->
+  Opts#exec{pgroup = false};
 exec_option(term_pgroup, Opts) ->
   Opts#exec{term_pgroup = true};
+exec_option({term_pgroup, true}, Opts) ->
+  Opts#exec{term_pgroup = true};
+exec_option({term_pgroup, false}, Opts) ->
+  Opts#exec{term_pgroup = false};
 exec_option({termsig, Signal}, Opts) when is_atom(Signal); is_integer(Signal) ->
   Opts#exec{termsig = Signal};
 exec_option({ignore_signals, SignalList}, Opts) ->
@@ -621,9 +633,12 @@ exec_option({argv0, Name}, Opts) when is_list(Name) ->
 
 is_option({stdio, _}) -> true;
 is_option({type, _}) -> true;
-is_option(stderr_to_stdout) -> true;
+is_option(stderr_to_stdout)      -> true;
+is_option({stderr_to_stdout, _}) -> true;
 is_option(pgroup)      -> true;
-is_option(term_pgroup) -> true;
+is_option({pgroup, _}) -> true;
+is_option(term_pgroup)      -> true;
+is_option({term_pgroup, _}) -> true;
 is_option({termsig, _}) -> true;
 is_option({ignore_signals, _}) -> true;
 is_option({nice, _})  -> true;
