@@ -255,6 +255,13 @@ recv(Port, Length, Timeout) when is_integer(Timeout) ->
 -spec setopts(subproc:handle(), [subproc:read_option()]) ->
   ok | {error, badarg}.
 
+setopts(Port, [{active, Mode}] = _Options) ->
+  % a shorthand that skips all parsing for setting `{active,once}' mode
+  try
+    ioctl_setactive(Port, Mode)
+  catch
+    _:_ -> {error, badarg}
+  end;
 setopts(Port, Options) ->
   case options(Options, #opts{}) of
     {ok, Opts = #opts{pid = undefined, close = undefined,
@@ -456,6 +463,23 @@ ioctl_setopts(Port, Options) ->
     setopts_packet_mode(Options),
     setopts_packet_size(Options)
   ]),
+  ok.
+
+%% @doc Shorthand for setting port reading mode.
+%%
+%% @see ioctl_setopts/2
+
+-spec ioctl_setactive(subproc:handle(), true | false | once) ->
+  ok.
+
+ioctl_setactive(Port, false = _Active) ->
+  port_control(Port, 1, <<1:8, 0:8, 0:8, 0:32>>),
+  ok;
+ioctl_setactive(Port, true = _Active) ->
+  port_control(Port, 1, <<2:8, 0:8, 0:8, 0:32>>),
+  ok;
+ioctl_setactive(Port, once = _Active) ->
+  port_control(Port, 1, <<3:8, 0:8, 0:8, 0:32>>),
   ok.
 
 %%----------------------------------------------------------
