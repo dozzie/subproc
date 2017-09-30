@@ -171,7 +171,8 @@
 %% <ul>
 %%   <li>`subproc' -- regular payload</li>
 %%   <li>`subproc_error' -- read error, after which read descriptor is
-%%       closed</li>
+%%       closed; `Reason' can be translated to a usable message with
+%%       {@link format_error/1} function</li>
 %%   <li>`subproc_closed' -- EOF on subprocess' STDOUT (read end of this
 %%       descriptor is closed)</li>
 %% </ul>
