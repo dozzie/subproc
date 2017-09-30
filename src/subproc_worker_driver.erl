@@ -496,7 +496,7 @@ ioctl_status(Port) ->
 ioctl_setopts(Port, Options) ->
   port_control(Port, 1, [
     setopts_read_mode(Options),
-    %setopts_exit_status_mode(Options), % TODO
+    setopts_exit_status_mode(Options),
     setopts_data_mode(Options),
     setopts_packet_mode(Options),
     setopts_packet_size(Options)
@@ -580,12 +580,12 @@ setopts_packet_size(#opts{packet_size = Size}) -> <<Size:32>>.
   #opts{}.
 
 ioctl_getopts(Port) ->
-  <<ReadMode:8, DataMode:8, PacketMode:8, PacketSize:32, PID:32>> =
-    port_control(Port, 2, <<>>),
+  <<ReadMode:8, ExitStatusMode:8, DataMode:8, PacketMode:8,
+    PacketSize:32, PID:32>> = port_control(Port, 2, <<>>),
   _Result = #opts{
     mode = getopts_data_mode(DataMode),
     active = getopts_read_mode(ReadMode),
-    %exit_status = getopts_exit_status_mode(ExitStatusMode), % TODO
+    exit_status = getopts_exit_status_mode(ExitStatusMode),
     packet = getopts_packet_mode(PacketMode),
     packet_size = PacketSize,
     pid = getopts_pid(PID)

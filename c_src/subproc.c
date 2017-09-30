@@ -109,6 +109,7 @@ struct subproc_context {
   char *output_start;
   // how to read data (active/passive, packet format, return format)
   enum read_mode read_mode;
+  uint8_t send_term_info;
   enum data_mode data_mode;
   enum packet_mode packet_mode;
   size_t max_packet_size;
@@ -250,6 +251,7 @@ ErlDrvData cdrv_start(ErlDrvPort port, char *cmd)
   // flags, options, and buffers for reading
   context->reading = 0;
   context->read_mode = passive;
+  context->send_term_info = 0;
   context->data_mode = string;
   context->packet_mode = raw;
   context->max_packet_size = MAX_PACKET_SIZE;
@@ -349,10 +351,11 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
 
   if (command == 1) { // setopts() {{{
 
-    if (len != 7)
+    if (len != 8)
       return -1;
 
     enum read_mode read_mode;
+    int send_term_info;
     enum data_mode data_mode;
     enum packet_mode packet_mode;
 
@@ -364,12 +367,18 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       default: return -1;
     }
     switch (buf[1]) {
+      case 0: send_term_info = context->send_term_info; break;
+      case 1: send_term_info = 0 /* false */; break;
+      case 2: send_term_info = 1 /* true */; break;
+      default: return -1;
+    }
+    switch (buf[2]) {
       case 0: data_mode = context->data_mode; break;
       case 1: data_mode = string; break;
       case 2: data_mode = binary; break;
       default: return -1;
     }
-    switch (buf[2]) {
+    switch (buf[3]) {
       case 0: packet_mode = context->packet_mode; break;
       case 1: packet_mode = raw; break;
       case 2: packet_mode = pfx1; break;
@@ -390,11 +399,19 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       cdrv_stop_reading(context);
     }
 
+    if (send_term_info && !context->send_term_info &&
+        (context->process_status == process_exited ||
+         context->process_status == process_killed)) {
+      cdrv_shutdown_send_exit(context);
+      send_term_info = 0; // mark the term info as already sent
+    }
+
     context->read_mode = read_mode;
+    context->send_term_info = send_term_info;
     context->data_mode = data_mode;
     context->packet_mode = packet_mode;
 
-    size_t max_packet_size = unpack32((unsigned char *)(buf + 3));
+    size_t max_packet_size = unpack32((unsigned char *)(buf + 4));
     if (max_packet_size > MAX_PACKET_SIZE)
       context->max_packet_size = MAX_PACKET_SIZE;
     else if (max_packet_size > 0)
@@ -430,7 +447,7 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
   if (command == 2) { // getopts() {{{
 
     // this should never be called
-    if (11 > rlen) *rbuf = driver_alloc(11);
+    if (12 > rlen) *rbuf = driver_alloc(12);
 
     switch (context->read_mode) {
       case passive: (*rbuf)[0] = 1; break;
@@ -438,24 +455,28 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       case once:    (*rbuf)[0] = 3; break;
       default:      (*rbuf)[0] = 0; break; // never reached
     }
+    switch (context->send_term_info) {
+      case 0:  (*rbuf)[1] = 1; break;
+      default: (*rbuf)[1] = 2; break;
+    }
     switch (context->data_mode) {
-      case string: (*rbuf)[1] = 1; break;
-      case binary: (*rbuf)[1] = 2; break;
-      default:     (*rbuf)[1] = 0; break; // never reached
+      case string: (*rbuf)[2] = 1; break;
+      case binary: (*rbuf)[2] = 2; break;
+      default:     (*rbuf)[2] = 0; break; // never reached
     }
     switch (context->packet_mode) {
-      case raw:  (*rbuf)[2] = 1; break;
-      case pfx1: (*rbuf)[2] = 2; break;
-      case pfx2: (*rbuf)[2] = 3; break;
-      case pfx4: (*rbuf)[2] = 4; break;
-      case line: (*rbuf)[2] = 5; break;
-      default:   (*rbuf)[2] = 0; break; // never reached
+      case raw:  (*rbuf)[3] = 1; break;
+      case pfx1: (*rbuf)[3] = 2; break;
+      case pfx2: (*rbuf)[3] = 3; break;
+      case pfx4: (*rbuf)[3] = 4; break;
+      case line: (*rbuf)[3] = 5; break;
+      default:   (*rbuf)[3] = 0; break; // never reached
     }
-    store32((unsigned char *)(*rbuf + 3), context->max_packet_size);
+    store32((unsigned char *)(*rbuf + 4), context->max_packet_size);
 
-    store32((unsigned char *)(*rbuf + 7),
+    store32((unsigned char *)(*rbuf + 8),
             (context->pid > 0) ? context->pid : 0);
-    return 11;
+    return 12;
   } // }}}
 
   if (command == 3) { // close(read|write|read_write) {{{
@@ -582,7 +603,10 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     cdrv_interrupt_write(context, ERROR_CLOSED);
     cdrv_close_fd(context, FDR_KEEP_PACKET | FDR | FDW);
 
-    // TODO: call cdrv_shutdown_send_exit()
+    if (context->send_term_info) {
+      cdrv_shutdown_send_exit(context);
+      context->send_term_info = 0;
+    }
 
     return 0;
   } // }}}
