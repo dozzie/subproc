@@ -30,7 +30,7 @@
 -define(MAX_SINT, 16#7fffffff).
 -define(MAX_UINT, 16#ffffffff).
 
--type option_name() :: mode | active | packet | packet_size.
+-type option_name() :: mode | active | exit_status | packet | packet_size.
 
 -type open_option() :: {pid, subproc:os_pid()}
                      | {close, boolean()}
@@ -40,6 +40,7 @@
 -record(opts, {
   mode :: list | binary | undefined,
   active :: true | false | once | undefined,
+  exit_status :: true | false | undefined,
   packet :: raw | 1 | 2 | 4 | line | undefined,
   packet_size :: pos_integer() | undefined,
   close :: boolean() | undefined,
@@ -64,6 +65,7 @@ open(STDIO, Options) ->
   Defaults = #opts{
     mode = list,
     active = false,
+    exit_status = false,
     packet = raw,
     packet_size = 16384, % 16kB
     close = true,        % see also `#opts{}' definition in `subproc_master'
@@ -304,6 +306,8 @@ get_option(mode = Name, {OptList, Opts = #opts{mode = Value}}) ->
   {[{Name, Value} | OptList], Opts};
 get_option(active = Name, {OptList, Opts = #opts{active = Value}}) ->
   {[{Name, Value} | OptList], Opts};
+get_option(exit_status = Name, {OptList, Opts = #opts{exit_status = Value}}) ->
+  {[{Name, Value} | OptList], Opts};
 get_option(packet = Name, {OptList, Opts = #opts{packet = Value}}) ->
   {[{Name, Value} | OptList], Opts};
 get_option(packet_size = Name, {OptList, Opts = #opts{packet_size = Value}}) ->
@@ -492,6 +496,7 @@ ioctl_status(Port) ->
 ioctl_setopts(Port, Options) ->
   port_control(Port, 1, [
     setopts_read_mode(Options),
+    %setopts_exit_status_mode(Options), % TODO
     setopts_data_mode(Options),
     setopts_packet_mode(Options),
     setopts_packet_size(Options)
@@ -527,6 +532,15 @@ setopts_read_mode(#opts{active = undefined}) -> <<0:8>>;
 setopts_read_mode(#opts{active = false}) -> <<1:8>>;
 setopts_read_mode(#opts{active = true})  -> <<2:8>>;
 setopts_read_mode(#opts{active = once})  -> <<3:8>>.
+
+%% @doc Encode exit status mode (`{exit_status,_}').
+
+-spec setopts_exit_status_mode(Opts :: #opts{}) ->
+  binary().
+
+setopts_exit_status_mode(#opts{exit_status = undefined}) -> <<0:8>>;
+setopts_exit_status_mode(#opts{exit_status = false}) -> <<1:8>>;
+setopts_exit_status_mode(#opts{exit_status = true})  -> <<2:8>>.
 
 %% @doc Encode type of data returned from reads.
 
@@ -571,6 +585,7 @@ ioctl_getopts(Port) ->
   _Result = #opts{
     mode = getopts_data_mode(DataMode),
     active = getopts_read_mode(ReadMode),
+    %exit_status = getopts_exit_status_mode(ExitStatusMode), % TODO
     packet = getopts_packet_mode(PacketMode),
     packet_size = PacketSize,
     pid = getopts_pid(PID)
@@ -587,6 +602,14 @@ ioctl_getopts(Port) ->
 getopts_read_mode(1) -> false;
 getopts_read_mode(2) -> true;
 getopts_read_mode(3) -> once.
+
+%% @doc Decode exit status mode (`{exit_status,_}').
+
+-spec getopts_exit_status_mode(V :: integer()) ->
+  true | false.
+
+getopts_exit_status_mode(1) -> false;
+getopts_exit_status_mode(2) -> true.
 
 %% @doc Decode type of data returned from reads.
 
@@ -656,6 +679,8 @@ option({mode, Mode}, Opts) when Mode == list; Mode == binary ->
   Opts#opts{mode = Mode};
 option({active, Mode}, Opts) when Mode == true; Mode == false; Mode == once ->
   Opts#opts{active = Mode};
+option({exit_status, Mode}, Opts) when is_boolean(Mode) ->
+  Opts#opts{exit_status = Mode};
 option({packet, P}, Opts) when P == 0; P == raw ->
   Opts#opts{packet = raw};
 option({packet, P}, Opts) when P == 1; P == 2; P == 4; P == line ->

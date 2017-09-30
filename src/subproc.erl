@@ -23,7 +23,7 @@
 
 -export_type([handle/0, stdio/0]).
 -export_type([exec_option/0, port_option/0, read_option/0, native_read_option/0]).
--export_type([message/0]).
+-export_type([message/0, message_term_info/0]).
 -export_type([posix/0]).
 -export_type([os_pid/0, os_fd/0, uid/0, gid/0]).
 -export_type([exit_code/0, signal/0, signal_name/0, signal_number/0]).
@@ -137,6 +137,7 @@
 
 -type read_option() :: list | binary | {mode, list | binary}
                      | {active, true | false | once}
+                     | {exit_status, boolean()}
                      | {packet, 0 | 1 | 2 | 4 | raw | line}
                      | {packet_size, pos_integer()}.
 %% Options controlling how data from `subproc' type ports is read.
@@ -148,6 +149,11 @@
 %%   <li>`{active,_}' -- set receiving {@type message()} messages from port;
 %%       when set to `false', the port will not send any data on its own and
 %%       {@link recv/2} or {@link recv/3} call is required</li>
+%%   <li>`{exit_status,_}' -- set receiving {@type message_term_info()}
+%%       message from port; when set to `false', the port will not send any
+%%       termination info on its own and {@link status/1} call is
+%%       required; the option can be set before or after the subprocess
+%%       terminated</li>
 %%   <li>`{packet,_}' -- packet format to read from the port; `{packet, 0}'
 %%       and `{packet, raw}' are synonymous, with the latter being the
 %%       canonical form ({@link getopts/2})</li>
@@ -159,10 +165,7 @@
 
 -type message() :: {subproc, Port :: handle(), Data :: binary() | string()}
                  | {subproc_closed, Port :: handle()}
-                 | {subproc_error, Port :: handle(), Reason :: term()}
-                 | {subproc_exit, Port :: handle(), exit_code()}
-                 | {subproc_signal, Port :: handle(),
-                     {signal_number(), signal_name()}}.
+                 | {subproc_error, Port :: handle(), Reason :: term()}.
 %% Messages sent in `{active,true}' and `{active,once}' modes.
 %%
 %% <ul>
@@ -171,18 +174,7 @@
 %%       closed</li>
 %%   <li>`subproc_closed' -- EOF on subprocess' STDOUT (read end of this
 %%       descriptor is closed)</li>
-%%   <li>`subproc_exit', `subproc_signal' -- subprocess terminated calling
-%%       `exit(2)' or on signal, accordingly</li>
 %% </ul>
-%%
-%% If {@type port_option()} `{close_on_exit,true}' was set,
-%% `subproc_exit'/`subproc_signal' message will be delayed until all remaining
-%% output data is read, so termination info will be the last message. With
-%% `{close_on_exit,false}', child processes can still produce and receive
-%% data after termination info is received.
-%%
-%% If the port was opened with {@link open/2} function, the last message will
-%% be `subproc_closed' or `subproc_error'.
 %%
 %% Most notable errors:
 %% <ul>
@@ -191,6 +183,13 @@
 %%   <li>`{subproc_error,Port,emsgsize}' -- message was larger than
 %%       `packet_size' {@type read_option()}</li>
 %% </ul>
+
+-type message_term_info() ::
+    {subproc_terminated, Port :: handle(), exit, exit_code()}
+  | {subproc_terminated, Port :: handle(), signal,
+      {signal_number(), signal_name()}}.
+%% Message sent after subprocess terminated and the port had
+%% `{exit_status,true}' option set.
 
 -type posix() :: inet:posix().
 %% Atom representation of an `errno' value.
