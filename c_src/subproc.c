@@ -14,12 +14,14 @@
 #include <errno.h>
 #include <limits.h>
 #include <string.h>
+#include <ctype.h>
 
 // }}}
 //----------------------------------------------------------
 // local includes {{{
 
 #include "int_pack.h"
+#include "signal_names.h"
 
 // }}}
 //----------------------------------------------------------
@@ -1397,6 +1399,8 @@ void cdrv_shutdown_send_exit(struct subproc_context *context)
 {
   ErlDrvTermData reply[8]; // XXX: keep in sync with maximum value of `count'
   size_t count = 0;
+  const char *full_name;
+  char signal_name[MAX_SIGNAL_NAME] = "unknown";
 
   switch (context->process_status) {
     case process_exited:
@@ -1408,16 +1412,25 @@ void cdrv_shutdown_send_exit(struct subproc_context *context)
     break;
 
     case process_killed:
+      full_name = find_signal_name(context->exit_code);
+      if (signal_name != NULL) {
+        size_t i;
+        for (i = 3; full_name[i] != 0; ++i)
+          signal_name[i - 3] = tolower(full_name[i]);
+        signal_name[i - 3] = 0;
+      }
+
       reply[count++] = ERL_DRV_ATOM;
       reply[count++] = driver_mk_atom("signal");
 
       reply[count++] = ERL_DRV_UINT;
       reply[count++] = (ErlDrvUInt)context->exit_code;
-      // TODO: make a tuple {SigNum :: integer(), SigName :: atom()}
-      // reply[count++] = ERL_DRV_ATOM;
-      // reply[count++] = driver_mk_atom(signal_name);
-      // reply[count++] = ERL_DRV_TUPLE;
-      // reply[count++] = 2;
+
+      reply[count++] = ERL_DRV_ATOM;
+      reply[count++] = driver_mk_atom(signal_name);
+
+      reply[count++] = ERL_DRV_TUPLE;
+      reply[count++] = 2;
     break;
 
     default:
