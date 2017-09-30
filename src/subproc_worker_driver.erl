@@ -16,7 +16,8 @@
 %% public interface
 -export([open/2, close/1, close/2]).
 -export([send/2, recv/2, recv/3]).
--export([setopts/2, getopts/2, controlling_process/2, terminated/2]).
+-export([setopts/2, getopts/2, controlling_process/2, status/1]).
+-export([terminated/2]).
 -export([valid_options/1]).
 -export([format_error/1]).
 
@@ -326,6 +327,22 @@ terminated(Port, {_, _} = TermInfo) ->
     _:_ -> {error, badarg}
   end.
 
+%% @doc Check exit status of the port's child process.
+
+-spec status(subproc:handle()) ->
+    running
+  | {exit, subproc:exit_code()}
+  | {signal, {subproc:signal_number(), subproc:signal_name()}}
+  | undefined
+  | {error, badarg}.
+
+status(Port) ->
+  try
+    ioctl_status(Port)
+  catch
+    _:_ -> {error, badarg}
+  end.
+
 %% @doc Assign a new owner to a port.
 
 -spec controlling_process(subproc:handle(), pid()) ->
@@ -447,6 +464,22 @@ ioctl_terminated(Port, {exit, ExitCode}) ->
 ioctl_terminated(Port, {signal, {SigNum, _SigName}}) ->
   port_control(Port, 6, <<2:8, SigNum:8>>),
   ok.
+
+%% @doc Check stauts of the port's subprocess.
+
+-spec ioctl_status(subproc:handle()) ->
+    running
+  | {exit, subproc:exit_code()}
+  | {signal, {subproc:signal_number(), subproc:signal_name()}}
+  | undefined.
+
+ioctl_status(Port) ->
+  case port_control(Port, 7, <<>>) of
+    <<0:8, _:8>> -> undefined;
+    <<1:8, _:8>> -> running;
+    <<2:8, ExitCode:8>> -> {exit, ExitCode};
+    <<3:8, SigNum:8>> -> {signal, {SigNum, subproc_unix:signal_name(SigNum)}}
+  end.
 
 %% @doc Set port options.
 %%

@@ -660,6 +660,32 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     return 0;
   } // }}}
 
+  if (command == 7) { // status() {{{
+    // this should never be called
+    if (2 > rlen) *rbuf = driver_alloc(2);
+
+    switch (context->process_status) {
+      case process_alive:
+        (*rbuf)[0] = 1;
+        (*rbuf)[1] = 0;
+      break;
+      case process_exited:
+        (*rbuf)[0] = 2;
+        (*rbuf)[1] = context->exit_code;
+      break;
+      case process_killed:
+        (*rbuf)[0] = 3;
+        (*rbuf)[1] = context->exit_code;
+      break;
+      default:
+        (*rbuf)[0] = 0;
+        (*rbuf)[1] = 0;
+      break;
+    }
+
+    return 2;
+  } // }}}
+
   return -1;
 }
 

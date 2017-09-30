@@ -17,7 +17,7 @@
 -export([exec/3, open/2, close/1]).
 -export([close/2, signal/1, signal/2]).
 -export([send/2, recv/2, recv/3]).
--export([setopts/2, getopts/2, controlling_process/2]).
+-export([setopts/2, getopts/2, controlling_process/2, status/1]).
 -export([config_reload/0]).
 -export([format_error/1]).
 
@@ -476,6 +476,18 @@ getopts(Port, Options) ->
 
 controlling_process(Port, Pid) ->
   subproc_worker_driver:controlling_process(Port, Pid).
+
+%% @doc Check exit status of the port's child process.
+
+-spec status(subproc:handle()) ->
+    running
+  | {exit, subproc:exit_code()}
+  | {signal, {subproc:signal_number(), subproc:signal_name()}}
+  | undefined
+  | {error, badarg}.
+
+status(Port) ->
+  subproc_worker_driver:status(Port).
 
 %% }}}
 %%----------------------------------------------------------
