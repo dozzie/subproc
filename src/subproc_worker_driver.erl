@@ -74,8 +74,6 @@ open(STDIO, Options) ->
   case {valid_stdio(STDIO), options(Options, Defaults)} of
     {true, {ok, Opts = #opts{pid = PID, close = AutoClose,
                              close_on_exit = CloseOnExit}} } ->
-      PrivDir = elf_library_dir(),
-      ok = erl_ddll:load(PrivDir, ?DRIVER_NAME),
       try open_port({spawn_driver, ?DRIVER_NAME}, [binary]) of
         Port ->
           ok = ioctl_setfd(Port, STDIO, PID, AutoClose, CloseOnExit),
@@ -83,7 +81,6 @@ open(STDIO, Options) ->
           {ok, Port}
       catch
         error:Reason ->
-          erl_ddll:unload(?DRIVER_NAME),
           {error, Reason}
       end;
     {_, _} ->
@@ -91,22 +88,6 @@ open(STDIO, Options) ->
       {error, badarg}
   end.
 
-%%----------------------------------------------------------
-%% elf_library_dir() {{{
-
-%% @doc Return path to the directory with shared libraries and executables for
-%%   this application.
-
--spec elf_library_dir() ->
-  file:filename().
-
-elf_library_dir() ->
-  case code:lib_dir(subproc, priv) of
-    {error, bad_name} -> erlang:error({missing_application, subproc});
-    PrivDir -> PrivDir
-  end.
-
-%% }}}
 %%----------------------------------------------------------
 %% valid_stdio() {{{
 
@@ -144,8 +125,7 @@ valid_stdio(STDIO) ->
 close(Port) ->
   try
     unlink(Port),
-    port_close(Port),
-    erl_ddll:unload(?DRIVER_NAME)
+    port_close(Port)
   catch
     % this could be caused by port already being closed, which is expected in
     % some cases

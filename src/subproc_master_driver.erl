@@ -102,7 +102,6 @@ open(Options) ->
   try lists:foldr(fun open_option/2, {infinity, false}, Options) of
     {Timeout, KillFlag} ->
       PrivDir = elf_library_dir(),
-      ok = erl_ddll:load(PrivDir, ?DRIVER_SUP_NAME),
       UnixSupExeName = filename:join(PrivDir, ?DRIVER_SUP_EXE_NAME),
       DriverCommand = ?DRIVER_SUP_NAME ++ " " ++ UnixSupExeName,
       try open_port({spawn_driver, DriverCommand}, [binary]) of
@@ -113,7 +112,6 @@ open(Options) ->
           {ok, Port}
       catch
         error:Reason ->
-          erl_ddll:unload(?DRIVER_SUP_NAME),
           {error, Reason}
       end
   catch
@@ -184,8 +182,7 @@ pidof(Port) ->
 close(Port) ->
   try
     unlink(Port),
-    port_close(Port),
-    erl_ddll:unload(?DRIVER_SUP_NAME)
+    port_close(Port)
   catch
     % this could be caused by port already being closed, which is expected in
     % some cases

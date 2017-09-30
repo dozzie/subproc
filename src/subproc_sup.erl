@@ -35,6 +35,9 @@ start_link() ->
 init([] = _Args) ->
   Strategy = {one_for_one, 5, 10},
   Children = [
+    {subproc_driver_loader,
+      {subproc_driver_loader, start_link, []},
+      permanent, 5000, worker, [subproc_driver_loader]},
     {subproc_mdrv_reaper,
       {subproc_mdrv_reaper, start_link, []},
       permanent, 5000, worker, [subproc_mdrv_reaper]},
