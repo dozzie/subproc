@@ -1161,6 +1161,18 @@ static void cdrv_send_input(struct subproc_context *context,
   if (len < 0 && (error == EWOULDBLOCK || error == EAGAIN))
     return;
 
+  if (len == 0 &&
+      (!packet_boundary(&context->packet) ||
+       (context->packet.packet_mode == raw &&
+        context->packet.pending_used == 0 &&
+        context->packet.buffer_used == 0 &&
+        context->packet.pending_used == 0))) {
+    // FIXME: move the condition to a function instead of checking the
+    // structure internals directly
+    len = -1;
+    error = ERROR_CLOSED;
+  }
+
   if (context->read_mode == passive) {
     if (len > 0) { // {ok, Data :: string() | binary()}
       ErlDrvTermData reply[] = {
@@ -1372,8 +1384,7 @@ size_t cdrv_shutdown_send_data(struct subproc_context *context,
     if (packet_size < PKT_ERR_NOT_READY) {
       // fatal error, disregard `count' (if (count == 0), it's OK to send
       // EOF-like message, and if (count >= 1), we're in active mode anyway)
-      cdrv_send_input(context, receiver, NULL, -1,
-                      packet_errno(packet_size));
+      cdrv_send_input(context, receiver, NULL, -1, packet_errno(packet_size));
       if (context->output_pending != NULL) {
         driver_free_binary(context->output_pending);
         context->output_pending = NULL;
@@ -1405,23 +1416,9 @@ size_t cdrv_shutdown_send_data(struct subproc_context *context,
     }
   }
 
-  if (count == 0) {
+  if (count == 0)
     // if we weren't able to send any data message, send an EOF now
-    if (packet_boundary(&context->packet)) // proper EOF
-      cdrv_send_input(context, receiver, NULL, 0, 0);
-    else if (context->packet.packet_mode == raw &&
-             context->packet.pending_used == 0 &&
-             context->packet.buffer_used == 0 &&
-             context->packet.pending_used == 0)
-      // XXX: special case for recv() with non-zero size and raw packet
-      // type, when we still haven't read anything (packet_boundary() returns
-      // false)
-      // FIXME: move the condition to a function instead of checking the
-      // structure internals directly
-      cdrv_send_input(context, receiver, NULL, 0, 0);
-    else // incomplete packet
-      cdrv_send_input(context, receiver, NULL, -1, ERROR_CLOSED);
-  }
+    cdrv_send_input(context, receiver, NULL, 0, 0);
 
   return count;
 }
