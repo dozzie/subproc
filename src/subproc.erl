@@ -494,14 +494,23 @@ status(Port) ->
 %% reload application's environment {{{
 
 %% @doc Reload application's environment (shutdown options).
-%%
-%% @todo Report config errors.
 
 -spec config_reload() ->
-  ok.
+  ok | {error, bad_config}.
 
 config_reload() ->
-  subproc_master:reload().
+  % reload subprocesses manager's options
+  case subproc_master:reload() of
+    ok ->
+      % reload shutdown timeout for `subproc_master' process (assume hasn't
+      % changed between `subproc_master:reload()' and now)
+      sys:suspend(subproc_sup),
+      ok = sys:change_code(subproc_sup, subproc_sup, "", []),
+      sys:resume(subproc_sup),
+      ok;
+    {error, badarg} ->
+      {error, bad_config}
+  end.
 
 %% }}}
 %%----------------------------------------------------------

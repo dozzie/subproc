@@ -168,7 +168,7 @@ kill(Port, Signal) ->
 %% @doc Reload shutdown options from application's environment.
 
 -spec reload() ->
-  ok.
+  ok | {error, badarg}.
 
 reload() ->
   gen_server:call(?MODULE, reload, infinity).
@@ -193,8 +193,13 @@ format_error(Reason) ->
 
 init(_Args) ->
   process_flag(trap_exit, true),
-  % TODO: shutdown timeout, shutdown kill option
-  {ok, MasterPort} = subproc_master_driver:open([]),
+  MasterOptions = case shutdown_options() of
+    {ok, {Timeout, true = _KillFlag}} ->
+      [{shutdown_timeout, Timeout}, shutdown_kill];
+    {ok, {Timeout, false = _KillFlag}} ->
+      [{shutdown_timeout, Timeout}, no_shutdown_kill]
+  end,
+  {ok, MasterPort} = subproc_master_driver:open(MasterOptions),
   subproc_mdrv_reaper:watch(MasterPort),
   Registry = ets:new(subproc_port_registry, [set, protected]),
   State = #state{
@@ -317,10 +322,14 @@ handle_call({kill, What, Signal} = _Request, _From,
   end,
   {reply, Reply, State};
 
-handle_call(reload = _Request, _From,
-            State = #state{port = _MasterPort}) ->
-  % TODO: reload application environment and set shutdown options
-  {reply, {error, 'TODO'}, State};
+handle_call(reload = _Request, _From, State = #state{port = MasterPort}) ->
+  Result = case shutdown_options() of
+    {ok, {Timeout, KillFlag}} ->
+      subproc_master_driver:shutdown_options(MasterPort, Timeout, KillFlag);
+    {error, badarg} ->
+      {error, badarg}
+  end,
+  {reply, Result, State};
 
 %% unknown calls
 handle_call(_Request, _From, State) ->
@@ -528,6 +537,27 @@ option(Option, Opts = #opts{exec_options = EOpts, port_options = POpts}) ->
   case subproc_master_driver:is_option(Option) of
     true  -> Opts#opts{exec_options = [Option | EOpts]};
     false -> Opts#opts{port_options = [Option | POpts]}
+  end.
+
+%%%---------------------------------------------------------------------------
+
+%% @doc Get subprocess' supervisor shutdown options from application
+%%   environment.
+
+-spec shutdown_options() ->
+  {ok, {timeout(), KillFlag :: boolean()}} | {error, badarg}.
+
+shutdown_options() ->
+  case application:get_env(shutdown_timeout) of
+    {ok, Timeout} when is_integer(Timeout), Timeout > 0; Timeout == infinity ->
+      case application:get_env(shutdown_kill) of
+        {ok, KillFlag} when is_boolean(KillFlag) ->
+          {ok, {Timeout, KillFlag}};
+        _ ->
+          {error, badarg}
+      end;
+    _ ->
+      {error, badarg}
   end.
 
 %%%---------------------------------------------------------------------------

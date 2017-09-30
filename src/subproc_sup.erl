@@ -43,9 +43,26 @@ init([] = _Args) ->
       permanent, 5000, worker, [subproc_mdrv_reaper]},
     {subproc_master,
       {subproc_master, start_link, []},
-      permanent, 5000, worker, [subproc_master]}
+      permanent, subproc_master_timeout(), worker, [subproc_master]}
   ],
   {ok, {Strategy, Children}}.
+
+%%%---------------------------------------------------------------------------
+
+%% @doc Get shutdown timeout for `subproc_master' process.
+%%   The function accounts for shutdown timeout for subprocesses and for kill
+%%   flag.
+
+-spec subproc_master_timeout() ->
+  timeout().
+
+subproc_master_timeout() ->
+  {ok, KillFlag} = application:get_env(shutdown_kill),
+  case application:get_env(shutdown_timeout) of
+    {ok, infinity} -> infinity;
+    {ok, T} when is_integer(T), T > 0, KillFlag -> 2 * T + 500;
+    {ok, T} when is_integer(T), T > 0, not KillFlag -> T + 500
+  end.
 
 %%%---------------------------------------------------------------------------
 %%% vim:ft=erlang:foldmethod=marker
