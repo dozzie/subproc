@@ -1399,8 +1399,7 @@ void cdrv_shutdown_send_exit(struct subproc_context *context)
 {
   ErlDrvTermData reply[8]; // XXX: keep in sync with maximum value of `count'
   size_t count = 0;
-  const char *full_name;
-  char signal_name[MAX_SIGNAL_NAME] = "unknown";
+  const char *signal_name;
 
   switch (context->process_status) {
     case process_exited:
@@ -1412,13 +1411,9 @@ void cdrv_shutdown_send_exit(struct subproc_context *context)
     break;
 
     case process_killed:
-      full_name = find_signal_name(context->exit_code);
-      if (signal_name != NULL) {
-        size_t i;
-        for (i = 3; full_name[i] != 0; ++i)
-          signal_name[i - 3] = tolower(full_name[i]);
-        signal_name[i - 3] = 0;
-      }
+      signal_name = find_signal_shortname(context->exit_code);
+      if (signal_name == NULL)
+        signal_name = "unknown";
 
       reply[count++] = ERL_DRV_ATOM;
       reply[count++] = driver_mk_atom("signal");
@@ -1427,7 +1422,7 @@ void cdrv_shutdown_send_exit(struct subproc_context *context)
       reply[count++] = (ErlDrvUInt)context->exit_code;
 
       reply[count++] = ERL_DRV_ATOM;
-      reply[count++] = driver_mk_atom(signal_name);
+      reply[count++] = driver_mk_atom((char *)signal_name);
 
       reply[count++] = ERL_DRV_TUPLE;
       reply[count++] = 2;

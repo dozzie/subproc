@@ -43,18 +43,12 @@ ERL_NIF_TERM unix_waitpid(ErlNifEnv* env, int argc, const ERL_NIF_TERM *argv)
   if (WIFSIGNALED(status)) {
     // I prefer to be sure (WIFSIGNALED()) that it's a signal than assume it
 
-    const char *signame = find_signal_name(WTERMSIG(status));
+    const char *signame = find_signal_shortname(WTERMSIG(status));
     // TODO: what if signame == NULL?
-
-    char result[MAX_SIGNAL_NAME];
-    size_t i;
-    for (i = 3; signame[i] != 0; ++i)
-      result[i - 3] = tolower(signame[i]);
-    result[i - 3] = 0;
 
     return enif_make_tuple2(env,
       enif_make_atom(env, "ok"),
-      enif_make_atom(env, result)
+      enif_make_atom(env, (char *)signame)
     );
   }
 
@@ -129,16 +123,11 @@ ERL_NIF_TERM translate_signal_name(ErlNifEnv* env,
   if (!enif_get_int(env, argv[0], &signal))
     return enif_make_badarg(env);
 
-  const char *signame = find_signal_name(signal);
+  const char *signame = find_signal_shortname(signal);
   if (signame == NULL)
     return enif_make_badarg(env);
-  char result[MAX_SIGNAL_NAME];
-  size_t i;
-  for (i = 3; signame[i] != 0; ++i)
-    result[i - 3] = tolower(signame[i]);
-  result[i - 3] = 0;
 
-  return enif_make_atom(env, result);
+  return enif_make_atom(env, (char *)signame);
 }
 
 static
