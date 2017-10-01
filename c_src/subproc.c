@@ -981,10 +981,8 @@ void cdrv_close_fd(struct subproc_context *context, unsigned int fds)
     set_busy_port(context->erl_port, 0);
   }
 
-  if ((fds & (FDR | FDR_KEEP_PACKET)) == FDR) {
-    // TODO: maybe flush data from context->packet?
+  if ((fds & (FDR | FDR_KEEP_PACKET)) == FDR)
     packet_free(&context->packet);
-  }
 
   // only unset `ERL_DRV_USE' flag when we're supposed to close the
   // descriptors

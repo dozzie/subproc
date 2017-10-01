@@ -345,7 +345,7 @@ handle_cast(_Request, State) ->
 %% @private
 %% @doc Handle incoming messages.
 
-handle_info({subproc_sup, MasterPort, _EventData, _FDs} = Message,
+handle_info({subproc_sup, MasterPort, EventData, FDs} = Message,
             State = #state{port = MasterPort, registry = Registry}) ->
   % NOTE: `exec' and `exec_error' messages can only arrive on exec request,
   % and we don't have such requests running asynchronously
@@ -375,11 +375,18 @@ handle_info({subproc_sup, MasterPort, _EventData, _FDs} = Message,
       NewState = State#state{port = undefined},
       {stop, normal, NewState};
     {shutdown, AliveChildren} when AliveChildren > 0 ->
-      % TODO: log this event as operational warning
+      error_logger:warning_report(subproc_master, [
+        "shutdown incomplete",
+        {alive_children, AliveChildren}
+      ]),
       NewState = State#state{port = undefined},
       {stop, normal, NewState};
     {error, unknown_event} ->
-      % TODO: log this event as a library internal error
+      error_logger:warning_report(subproc_master, [
+        "unrecognized event from subprocess supervisor",
+        {event_data, EventData},
+        {fds, FDs}
+      ]),
       {noreply, State}
   end;
 

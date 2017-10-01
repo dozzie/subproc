@@ -6,6 +6,7 @@
 #include <signal.h>
 
 #include "supervisor.h"
+#include "supervisor_loop.h"
 
 static int getint(char *string, int *result)
 {

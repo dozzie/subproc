@@ -111,28 +111,6 @@ int supervisor_spawn(struct sup_h *sup, char *exe_path)
   return 0;
 }
 
-int supervisor_terminate(struct sup_h *sup)
-{
-  if (sup->pid <= 0)
-    return 0; // TODO: signal this somehow?
-
-  // TODO: make this a message, maybe with an ACK event
-  close(sup->comm);
-  close(sup->events);
-
-  int status;
-  waitpid(sup->pid, &status, 0);
-  sup->pid = -1;
-  sup->comm = -1;
-  sup->events = -1;
-
-  if (WIFEXITED(status)) {
-    return WEXITSTATUS(status);
-  } else { // WIFSIGNALED(status)
-    return -WTERMSIG(status);
-  }
-}
-
 // }}}
 //----------------------------------------------------------------------------
 // send/receive messages {{{

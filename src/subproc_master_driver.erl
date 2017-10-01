@@ -891,8 +891,11 @@ error_errno(Errno) ->
   atom().
 
 signal_name(Signal) ->
-  % TODO: on error return something instead of dying
-  subproc_unix:signal_name(Signal).
+  try
+    subproc_unix:signal_name(Signal)
+  catch
+    _:_ -> unknown
+  end.
 
 %%%---------------------------------------------------------------------------
 %%% vim:ft=erlang:foldmethod=marker

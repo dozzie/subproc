@@ -2,12 +2,6 @@
 %%% @private
 %%% @doc
 %%%   Functions for working with worker port driver directly.
-%%%
-%%% @todo A function to inform port that its child exited/got killed (this
-%%%   should immediately close FDW descriptor, but what with FDR? on one hand,
-%%%   there could be some pending data to read, but on the other hand,
-%%%   a subprocess could keep the descriptor open and still produce data
-%%%   there; it could be a port option).
 %%% @end
 %%%---------------------------------------------------------------------------
 
@@ -177,10 +171,7 @@ send(Port, Data) ->
 -spec recv(subproc:handle(), non_neg_integer()) ->
     {ok, Data :: string() | binary()}
   | eof
-  | {terminated, Exit | Signal}
-  | {error, closed | subproc:posix()}
-  when Exit :: {exit, subproc:exit_code()},
-       Signal :: {signal, subproc:signal_number(), subproc:signal_name()}.
+  | {error, closed | subproc:posix()}.
 
 recv(Port, Length) ->
   recv(Port, Length, infinity).
@@ -199,10 +190,7 @@ recv(Port, Length) ->
 -spec recv(subproc:handle(), non_neg_integer(), timeout()) ->
     {ok, Data :: string() | binary()}
   | eof
-  | {terminated, Exit | Signal}
-  | {error, closed | timeout | subproc:posix()}
-  when Exit :: {exit, subproc:exit_code()},
-       Signal :: {signal, subproc:signal_number(), subproc:signal_name()}.
+  | {error, closed | timeout | subproc:posix()}.
 
 recv(Port, Length, infinity = _Timeout) ->
   port_control(Port, 4, <<Length:32>>),
