@@ -491,13 +491,13 @@ ioctl_setopts(Port, Options) ->
   ok.
 
 ioctl_setactive(Port, false = _Active) ->
-  port_control(Port, 1, <<1:8, 0:8, 0:8, 0:32>>),
+  port_control(Port, 1, <<1:8, 0:8, 0:8, 0:8, 0:32>>),
   ok;
 ioctl_setactive(Port, true = _Active) ->
-  port_control(Port, 1, <<2:8, 0:8, 0:8, 0:32>>),
+  port_control(Port, 1, <<2:8, 0:8, 0:8, 0:8, 0:32>>),
   ok;
 ioctl_setactive(Port, once = _Active) ->
-  port_control(Port, 1, <<3:8, 0:8, 0:8, 0:32>>),
+  port_control(Port, 1, <<3:8, 0:8, 0:8, 0:8, 0:32>>),
   ok.
 
 %%----------------------------------------------------------
