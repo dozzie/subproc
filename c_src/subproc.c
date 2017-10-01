@@ -1141,11 +1141,11 @@ static void cdrv_send_input(struct subproc_context *context,
     return;
 
   if (len == 0 &&
-      (!packet_boundary(&context->packet) ||
-       (context->packet.packet_mode == raw &&
+      !packet_boundary(&context->packet) &&
+      !(context->packet.packet_mode == raw &&
         context->packet.pending_used == 0 &&
         context->packet.buffer_used == 0 &&
-        context->packet.pending_used == 0))) {
+        context->packet.pending_used == 0)) {
     // FIXME: move the condition to a function instead of checking the
     // structure internals directly
     len = -1;
