@@ -1,7 +1,12 @@
 {application, subproc, [
   {description, ""},
   {vsn, "0.0.0"},
-  {registered, []},
+  {registered, [
+    subproc_sup,
+    subproc_driver_loader,
+    subproc_mdrv_reaper,
+    subproc_master
+  ]},
   {applications, [kernel, stdlib]},
   {modules, []},
   {mod, {subproc_app, []}},
