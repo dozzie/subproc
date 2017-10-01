@@ -11,7 +11,7 @@ advantages:
 * subprocess' STDIO can be redirected with `pipe(2)` or `socketpair(2)`
 * spawned port can work in `{active,once}` and passive modes known from
   `gen_tcp` and other socket modules, which provides a sensible backpressure
-  to external command (running `yes` won't trigger OOM killer)
+  to external command (running `yes(1)` won't trigger OOM killer)
 
 `subproc` can also spawn ports from already-opened descriptors, which is
 mainly intended for reading from STDIN with backpressure.

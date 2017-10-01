@@ -1,0 +1,150 @@
+@author Stanislaw Klekot <dozzie@jarowit.net>
+@title Unix subprocess manager for Erlang
+@version 0.0.0
+@see subproc
+@see subproc_unix
+@doc
+
+`subproc' is a unix subprocess manager for Erlang. It works much closer with
+operating systems than Erlang, so over built-in ports it provides several
+advantages:
+
+<ul>
+  <li>tracks subprocess' PID</li>
+  <li>can spawn a subprocess in a process group</li>
+  <li>can send a signal to a subprocess or its process group</li>
+  <li>subprocess' <i>STDIO</i> can be redirected with `pipe(2)' or
+      `socketpair(2)'</li>
+  <li>spawned port can work in `{active,once}' and passive modes known from
+      {@link gen_tcp} and other socket modules, which provides a sensible
+      backpressure to external command (running `yes(1)' won't trigger OOM
+      killer)</li>
+</ul>
+
+`subproc' can also spawn ports from already-opened descriptors, which is
+mainly intended for reading from <i>STDIN</i> with backpressure.
+
+== Examples ==
+
+Active mode, data returned as strings:
+
+```
+1> application:start(subproc).
+ok
+2> {ok, Port} = subproc:exec("/bin/ls", ["-l", "/etc/pam.d"],
+                             [{stdio, in}, {packet, line}, {active, true}]).
+{ok,#Port<0.656>}
+3> flush().
+Shell got {subproc,#Port<0.656>,"total 84\n"}
+Shell got {subproc,#Port<0.656>,
+                   "-rw-r--r-- 1 root root  384 Nov 22  2008 chfn\n"}
+Shell got {subproc,#Port<0.656>,
+                   "-rw-r--r-- 1 root root   92 Feb 15  2011 chpasswd\n"}
+Shell got {subproc,#Port<0.656>,
+                   "-rw-r--r-- 1 root root  581 Nov 22  2008 chsh\n"}
+Shell got {subproc,#Port<0.656>,
+                   "-rw-r--r-- 1 root root 1208 Mar 28  2015 common-account\n"}
+% ...
+Shell got {subproc,#Port<0.656>,
+                   "-rw-r--r-- 1 root root   95 Feb 16  2015 sudo\n"}
+Shell got {subproc_closed,#Port<0.656>}
+ok
+4> subproc:setopts(Port, [{exit_status, true}]).
+ok
+5> flush().
+Shell got {subproc_terminated,#Port<0.656>,exit,0}
+ok
+6> subproc:status(Port).
+{exit,0}
+'''
+
+Passive mode, data returned as binaries:
+
+```
+1> application:start(subproc).
+ok
+2> {ok, Port} = subproc:exec("/bin/ls", ["-l", "/etc/pam.d"],
+                             [{stdio, in}, {packet, line}, binary]).
+{ok,#Port<0.656>}
+3> subproc:recv(Port, 0).
+{ok,<<"total 84\n">>}
+4> subproc:recv(Port, 0).
+{ok,<<"-rw-r--r-- 1 root root  384 Nov 22  2008 chfn\n">>}
+5> subproc:recv(Port, 0).
+{ok,<<"-rw-r--r-- 1 root root   92 Feb 15  2011 chpasswd\n">>}
+% ...
+17> subproc:recv(Port, 0).
+{ok,<<"-rw-r--r-- 1 root root   95 Feb 16  2015 sudo\n">>}
+18> subproc:recv(Port, 0).
+eof
+19> subproc:status(Port).
+{exit,0}
+20> subproc:setopts(Port, [{exit_status, true}]).
+ok
+21> flush().
+Shell got {subproc_terminated,#Port<0.656>,exit,0}
+ok
+'''
+
+Reading from STDIN for first 5 seconds:
+
+```
+#!/usr/bin/escript
+%%! -noinput
+
+%% NOTE: the `-noinput' option above is important, it prevents Erlang from
+%% spawning a port that uses descriptor 0
+
+main(_) ->
+  ok = application:start(subproc),
+  {ok, STDIN} = subproc:open({in, 0}, [{packet, line}, {active, once}]),
+  erlang:send_after(timer:seconds(5), self(), timeout),
+  read_all(STDIN).
+
+read_all(Port) ->
+  receive
+    timeout ->
+      io:fwrite("timeout, exiting~n");
+    {subproc, Port, Line} ->
+      io:fwrite("line: [~s]~n", [string:strip(Line, right, $\n)]),
+      subproc:setopts(Port, [{active, once}]),
+      read_all(Port);
+    {subproc_closed, Port} ->
+      io:fwrite("EOF, exiting~n");
+    {subproc_error, Port, Reason} ->
+      io:fwrite("read error: ~p~n", [Reason])
+  end.
+'''
+
+== Architecture ==
+
+<b>TODO</b>
+
+=== Erlang ===
+
+<b>TODO</b>
+
+supervisor, driver loader, reaper, master
+
+master:
+<ul>
+  <li>keeps port to communicate with `subproc_unix_supervisor'</li>
+  <li>tracks subproc (kill requests) and native ports (kill requests,
+      autoclose descriptors)</li>
+  <li>sends exec and kill requests to `subproc_unix_supervisor' (exec: spawns
+      subproc or native port)</li>
+  <li>receives events (spawn, spawn error, exited, killed, shutdown) and
+      forwards exited/killed to appropriate to subproc ports</li>
+</ul>
+
+reaper calls `waitpid()' on `subproc_unix_supervisor' PID when master crashes
+
+driver loader calls `erl_ddll:load()' on two drivers and makes sure that NIF
+module is loaded.
+
+=== C code ===
+
+<b>TODO</b>
+
+`chmod u+s subproc/priv/subproc_unix_supervisor'
+

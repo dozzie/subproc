@@ -137,7 +137,7 @@
 
 -type read_option() :: list | binary | {mode, list | binary}
                      | {active, true | false | once}
-                     | {exit_status, boolean()}
+                     | {exit_status, true | false}
                      | {packet, 0 | 1 | 2 | 4 | raw | line}
                      | {packet_size, pos_integer()}.
 %% Options controlling how data from `subproc' type ports is read.
@@ -232,6 +232,10 @@
 
 %% @doc Execute a subprocess, redirecting its STDIN and/or STDOUT.
 %%
+%%   `Command' should contain a path to executable to run. `$PATH' environment
+%%   variable is not searched. To find the path to an executable, use
+%%   {@link os:find_executable/1} or {@link os:find_executable/2}.
+%%
 %%   Result is a `subproc' port, which can be operated on with all the other
 %%   functions in this module.
 %%
@@ -251,7 +255,7 @@
 %%   `{mode,list}', `{packet,raw}', `{packet_size,16384}'.
 %%
 %%   When `{type,socket}' is specified without accompanying `{stdio,_}'
-%%   option, `{stdio,bidir}' {@type exec_option()} is set as the default.
+%%   option, `{stdio,bidir}' {@type exec_option()} is assumed.
 %%
 %%   Options list is treated in proplist manner: the earlier options take
 %%   the precedence.
@@ -280,6 +284,9 @@ exec(Command, Args, Options) ->
 %%   be spawned with {@link erlang:open_port/2}, but this function allows to
 %%   use the `{close,true}' flag. `raw_fd' is only included for completeness,
 %%   as it's essentially a no-op.
+%%
+%%   `native'-type port requires two descriptors, `{in_out,{FDR,FDW}}'. It is
+%%   a limitation of Erlang.
 %%
 %%   Since there's no known subprocess behind these descriptors,
 %%   `{close_on_exit,_}' option is ignored.
@@ -331,7 +338,7 @@ close(Port, How) ->
 
 %% @doc Send to the subprocess its default termination signal.
 %%
-%%   <b>NOTE</b> This function also works for native ports spawned with
+%%   <b>NOTE</b>: This function also works for native ports spawned with
 %%   {@link exec/3}.
 
 -spec signal(handle()) ->
@@ -345,7 +352,7 @@ signal(Port) ->
 %%   If the subprocess already terminated or the port was not spawned with
 %%   {@link exec/3} or {@link open/2}, `{error, badarg}' is returned.
 %%
-%%   <b>NOTE</b> This function also works for native ports spawned with
+%%   <b>NOTE</b>: This function also works for native ports spawned with
 %%   {@link exec/3}.
 
 -spec signal(handle(), signal() | default) ->
@@ -374,26 +381,12 @@ send(Port, Data) ->
 %% @see recv/3
 
 -spec recv(handle(), non_neg_integer()) ->
-    {ok, Data :: string() | binary()}
-  | eof
-  | {terminated, Exit | Signal}
-  | {error, closed | posix()}
-  when Exit :: {exit, exit_code()},
-       Signal :: {signal, signal_number(), signal_name()}.
+  {ok, Data :: string() | binary()} | eof | {error, closed | posix()}.
 
 recv(Port, Length) ->
   subproc_worker_driver:recv(Port, Length, infinity).
 
 %% @doc Read data from the subprocess.
-%%
-%%   If {@type port_option()} `{close_on_exit,true}' was set, `{terminated,_}'
-%%   will be returned after all remaining output data is read, so termination
-%%   info will be the last returned value. With `{close_on_exit,false}', child
-%%   processes can still produce and receive data after termination info is
-%%   returned.
-%%
-%%   If the port was opened with {@link open/2} function, the last returned
-%%   value will be `eof' or `{error,_}'.
 %%
 %%   Most notable errors:
 %%   <ul>
@@ -418,10 +411,7 @@ recv(Port, Length) ->
 -spec recv(handle(), non_neg_integer(), timeout()) ->
     {ok, Data :: string() | binary()}
   | eof
-  | {terminated, Exit | Signal}
-  | {error, closed | timeout | posix()}
-  when Exit :: {exit, exit_code()},
-       Signal :: {signal, signal_number(), signal_name()}.
+  | {error, closed | timeout | posix()}.
 
 recv(Port, Length, Timeout) ->
   subproc_worker_driver:recv(Port, Length, Timeout).
@@ -433,16 +423,14 @@ recv(Port, Length, Timeout) ->
 %% @doc Set one or more port options.
 %%
 %%   See {@type message()} for messages in `{active,true}' and `{active,once}'
-%%   modes.
+%%   modes and {@type message_term_info()} for termination info message when
+%%   `{exit_status,true}' option was set.
 %%
 %%   Options list is treated in proplist manner: the earlier options take
 %%   the precedence.
 
--spec setopts(handle(), Options :: [Option]) ->
-  ok | {error, badarg}
-  when Option :: {close, boolean()}
-               | {close_on_exit, boolean()}
-               | read_option().
+-spec setopts(handle(), Options :: [read_option()]) ->
+  ok | {error, badarg}.
 
 setopts(Port, Options) ->
   case subproc_worker_driver:setopts(Port, Options) of
@@ -457,10 +445,8 @@ setopts(Port, Options) ->
 
 -spec getopts(handle(), Options :: [OptionName]) ->
   {ok, [Option]} | {error, badarg}
-  when OptionName :: mode | active | packet | packet_size
-                   | pid | close | close_on_exit,
-       Option :: read_option()
-               | {pid, PID} | {close, boolean()} | {close_on_exit, boolean()},
+  when OptionName :: mode | active | packet | packet_size | exit_status | pid,
+       Option :: read_option() | {pid, PID},
        PID :: os_pid() | undefined.
 
 getopts(Port, Options) ->
@@ -478,6 +464,8 @@ controlling_process(Port, Pid) ->
   subproc_worker_driver:controlling_process(Port, Pid).
 
 %% @doc Check exit status of the port's child process.
+%%
+%%   `undefined' is returned if the port was spawned with {@link open/2}.
 
 -spec status(subproc:handle()) ->
     running
