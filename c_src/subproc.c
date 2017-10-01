@@ -109,6 +109,7 @@ struct subproc_context {
   // shutdown sequence
   ErlDrvBinary *output_pending;
   char *output_start;
+  uint8_t eof_sent;
   // how to read data (active/passive, packet format, return format)
   enum read_mode read_mode;
   uint8_t send_term_info;
@@ -247,6 +248,7 @@ ErlDrvData cdrv_start(ErlDrvPort port, char *cmd)
   // shutdown procedure fields
   context->output_pending = NULL;
   context->output_start = NULL;
+  context->eof_sent = 0;
   // operational data
   context->erl_port = port;
   context->fdin = context->fdout = -1;
@@ -422,7 +424,7 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     if (context->read_mode != passive) {
       // one of the active modes
 
-      if (context->output_pending) {
+      if (context->fdin < 0 && !context->eof_sent) {
         // shutdown and some data left to send
         if (context->read_mode == active) {
           if (cdrv_shutdown_send_data(context, ERL_PID_DOESNT_MATTER, 0, 0) > 0)
@@ -439,8 +441,15 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
                                     READ_ACTIVE, 0, &error);
       // ERROR_CLOSED (fdin closed) can/should be ignored, but other errors
       // are important
-      if (result < 0 && error != ERROR_CLOSED)
-        driver_failure_posix(context->erl_port, error);
+      if (result < 0 && error != ERROR_CLOSED) {
+        ErlDrvTermData reply[] = {
+          ERL_DRV_ATOM, driver_mk_atom(erl_errno_id(error))
+        };
+
+        cdrv_send_active(context->erl_port, "subproc_error", reply,
+                         sizeof(reply) / sizeof(reply[0]), 1);
+        context->eof_sent = 1;
+      }
     }
 
     return 0;
@@ -520,19 +529,23 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     if (read_size != 0 && context->packet_mode != raw) {
       // reading a specific number of bytes only allowed for raw packet mode
       cdrv_send_error(context->erl_port, caller, EINVAL);
+      // don't set eof_sent
       return 0;
     }
 
-    if (context->output_pending) {
+    if (context->fdin < 0 && !context->eof_sent) {
       // shutdown and some data left to send
       cdrv_shutdown_send_data(context, caller, read_size, 1);
       return 0;
     }
 
     int error;
-    if (cdrv_set_reading(context, caller, READ_RECV, read_size, &error) != 0)
+    if (cdrv_set_reading(context, caller, READ_RECV, read_size, &error) != 0) {
       cdrv_send_error(context->erl_port, caller, error);
-    // on success, `cdrv_ready_input()' sends a reply
+      // only set eof_sent on fatal errors
+      if (error != EINVAL && error != EALREADY)
+        context->eof_sent = 1;
+    } // on success, `cdrv_ready_input()' sends a reply
 
     return 0;
   } // }}}
@@ -936,6 +949,7 @@ void cdrv_interrupt_read(struct subproc_context *context, int error)
 
   context->reading = 0;
   cdrv_send_error(context->erl_port, context->read_reply_to, error);
+  // don't set eof_sent
 }
 
 static
@@ -1169,10 +1183,12 @@ static void cdrv_send_input(struct subproc_context *context,
       };
       cdrv_send_data(context->erl_port, receiver,
                      reply, sizeof(reply) / sizeof(reply[0]));
+      context->eof_sent = 1;
       cdrv_stop_reading(context);
       cdrv_close_fd(context, FDR);
     } else { // {error, Reason :: atom()}
       cdrv_send_error(context->erl_port, receiver, error);
+      context->eof_sent = 1;
       cdrv_stop_reading(context);
       cdrv_close_fd(context, FDR);
     }
@@ -1192,6 +1208,7 @@ static void cdrv_send_input(struct subproc_context *context,
       }
     } else if (len == 0) { // {subproc_closed, Port}
       cdrv_send_active(context->erl_port, "subproc_closed", NULL, 0, 0);
+      context->eof_sent = 1;
       cdrv_stop_reading(context);
       cdrv_close_fd(context, FDR);
     } else { // {subproc_error, Port, Reason :: atom()}
@@ -1204,6 +1221,8 @@ static void cdrv_send_input(struct subproc_context *context,
 
       cdrv_send_active(context->erl_port, "subproc_error", reply,
                        sizeof(reply) / sizeof(reply[0]), 1);
+      // we're here because of read() error; those are always fatal
+      context->eof_sent = 1;
       cdrv_stop_reading(context);
       cdrv_close_fd(context, FDR);
     }
