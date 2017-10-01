@@ -42,6 +42,8 @@
   port_type = subproc :: subproc | native | raw_fd,
   close = true :: boolean(),          % `{close, _}'
   close_on_exit = true :: boolean(),  % `{close_on_exit, _}'
+  active = false :: true | false | once, % `{active, _}'
+  exit_status = false :: true | false,   % `{exit_status, _}'
   exec_options = [] :: [term()],
   port_options = [] :: [term()]
 }).
@@ -321,8 +323,13 @@ handle_call({exec, Owner, Command, Args, OptionList} = _Request, _From,
   case options(OptionList) of
     Opts = #opts{} ->
       case spawn_port(MasterPort, Command, Args, Opts) of
-        {subproc, Port, ID} ->
+        {subproc, Port, ID, PortOpts} ->
           try subproc_worker_driver:controlling_process(Port, Owner) of
+            _ when PortOpts /= [] ->
+              % options to set after owner change (e.g. `{active,true}')
+              subproc_worker_driver:setopts(Port, PortOpts),
+              true = port_register(Port, ID, Registry),
+              {reply, {ok, Port}, State};
             _ ->
               true = port_register(Port, ID, Registry),
               {reply, {ok, Port}, State}
@@ -467,18 +474,23 @@ code_change(_OldVsn, State, _Extra) ->
 spawn_port(MasterPort, Command, Args,
            #opts{port_type = PortType, exec_options = ExecOpts,
                  port_options = PortOpts, close = AutoClose,
-                 close_on_exit = CloseOnExit}) ->
+                 close_on_exit = CloseOnExit,
+                 active = Active, exit_status = ExitStatus}) ->
   case subproc_master_driver:exec(MasterPort, Command, Args, ExecOpts) of
     {ok, {ID, PID, STDIO}} when PortType == subproc ->
       OpenOptions = [
+        {active, false},      % these messages are intended for the new owner,
+        {exit_status, false}, % so we want to avoid race conditions
         {pid, PID},
         {close, AutoClose},
         {close_on_exit, CloseOnExit} |
         PortOpts
       ],
       case subproc_worker_driver:open(STDIO, OpenOptions) of
+        {ok, Port} when not Active, not ExitStatus ->
+          {subproc, Port, ID, []};
         {ok, Port} ->
-          {subproc, Port, ID};
+          {subproc, Port, ID, [{active, Active}, {exit_status, ExitStatus}]};
         {error, Reason} ->
           close_stdio(STDIO),
           {error, Reason}
@@ -592,6 +604,14 @@ option({close, _}, _Opts) -> erlang:throw({error, badarg});
 option({close_on_exit, true},  Opts) -> Opts#opts{close_on_exit = true};
 option({close_on_exit, false}, Opts) -> Opts#opts{close_on_exit = false};
 option({close_on_exit, _}, _Opts) -> erlang:throw({error, badarg});
+%% `{active,_}' and `{exit_status,_}' are port options, not exec options, so
+%% we can decide here, and we need to know their values now, so the process
+%% requesting a subproc-type port sets them later (port is opened in passive
+%% mode)
+option({active, Value} = Option, Opts = #opts{port_options = POpts}) ->
+  Opts#opts{active = Value, port_options = [Option | POpts]};
+option({exit_status, Value} = Option, Opts = #opts{port_options = POpts}) ->
+  Opts#opts{exit_status = Value, port_options = [Option | POpts]};
 option(Option, Opts = #opts{exec_options = EOpts, port_options = POpts}) ->
   case subproc_master_driver:is_option(Option) of
     true  -> Opts#opts{exec_options = [Option | EOpts]};

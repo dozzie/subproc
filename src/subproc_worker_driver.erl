@@ -58,8 +58,8 @@
 open(STDIO, Options) ->
   Defaults = #opts{
     mode = list,
-    active = false,
-    exit_status = false,
+    active = false,      % see also `#opts{}' definition in `subproc_master'
+    exit_status = false, % see also `#opts{}' definition in `subproc_master'
     packet = raw,
     packet_size = 16384, % 16kB
     close = true,        % see also `#opts{}' definition in `subproc_master'
