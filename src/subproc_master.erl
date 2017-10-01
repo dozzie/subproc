@@ -80,24 +80,22 @@ start_link() ->
        RequestError :: atom().
 
 exec(Command, Args, Options) ->
-  Request = {exec, self(), Command, Args, Options},
-  case gen_server:call(?MODULE, Request, infinity) of
+  case call({exec, self(), Command, Args, Options}) of
     {ok, Port} when is_port(Port) ->
       {ok, Port};
     {ok, {native, ID, {in_out, {FDR, FDW}}, PortOpts, AutoClose}} ->
       try open_port({fd, FDR, FDW}, PortOpts) of
         Port when AutoClose ->
           % register port for killing and FDs closing
-          ok = gen_server:call(?MODULE, {reg, Port, native, ID, [FDR, FDW]},
-                               infinity),
+          ok = call({reg, Port, native, ID, [FDR, FDW]}),
           {ok, Port};
         Port when not AutoClose ->
           % register port for killing
-          ok = gen_server:call(?MODULE, {reg, Port, native, ID, []}, infinity),
+          ok = call({reg, Port, native, ID, []}),
           {ok, Port}
       catch
         error:Reason ->
-          gen_server:call(?MODULE, {open_port_failed, ID}, infinity),
+          call({open_port_failed, ID}),
           subproc_unix:close(FDR),
           subproc_unix:close(FDW),
           {error, Reason}
@@ -126,7 +124,7 @@ open(STDIO, Options) ->
       #opts{port_type = native, port_options = Opts, close = AutoClose}} ->
       try open_port({fd, FDR, FDW}, Opts) of
         Port when AutoClose ->
-          ok = gen_server:call(?MODULE, {reg, Port, [FDR, FDW]}, infinity),
+          ok = call({reg, Port, native, undefined, [FDR, FDW]}),
           {ok, Port};
         Port when not AutoClose ->
           % nothing to kill, nothing to close, no need to watch the port
@@ -159,7 +157,7 @@ open(STDIO, Options) ->
   ok | {error, badarg | bad_signal | subproc:posix()}.
 
 kill(Port, Signal) ->
-  case gen_server:call(?MODULE, {kill, Port, Signal}, infinity) of
+  case call({kill, Port, Signal}) of
     ok -> ok;
     {error, nxchild} -> {error, badarg};
     {error, Reason} -> {error, Reason}
@@ -171,7 +169,7 @@ kill(Port, Signal) ->
   ok | {error, badarg}.
 
 reload() ->
-  gen_server:call(?MODULE, reload, infinity).
+  call(reload).
 
 %% @doc Format a reason from error tuple as a usable error message.
 
@@ -180,6 +178,20 @@ reload() ->
 
 format_error(Reason) ->
   subproc_master_driver:format_error(Reason).
+
+%%----------------------------------------------------------
+%% call() {{{
+
+%% @doc Call `subproc_master' process.
+
+-spec call(term()) ->
+  term().
+
+call(Request) ->
+  gen_server:call(?MODULE, Request, infinity).
+
+%% }}}
+%%----------------------------------------------------------
 
 %%%---------------------------------------------------------------------------
 %%% gen_server callbacks
@@ -211,16 +223,85 @@ init(_Args) ->
 %% @private
 %% @doc Clean up {@link gen_server} state.
 
-terminate(_Arg, _State = #state{port = undefined, registry = Registry}) ->
-  % TODO: kill the subprocesses and close all the registered ports
+terminate(Reason, _State = #state{port = undefined, registry = Registry}) ->
+  % XXX: can't kill subprocesses, because master died
+  % kill the registered ports and close their autoclose descriptors
+  port_foreach(
+    fun(Port, _, _, FDs) -> shutdown_port(Port, {master_died,Reason}, FDs) end,
+    Registry
+  ),
   ets:delete(Registry),
   ok;
 terminate(_Arg, _State = #state{port = MasterPort, registry = Registry}) ->
-  % TODO: kill the subprocesses and close all the registered ports
-  ets:delete(Registry),
+  % order the subprocess supervisor to kill all children and terminate
   subproc_master_driver:shutdown(MasterPort),
-  % TODO: process events and wait for shutdown confirmation
+  % read all events, closing file descriptors marked as "close on exit"
+  shutdown_collect_events(MasterPort, Registry),
+  % kill the remaining registered ports and close their autoclose descriptors
+  port_foreach(
+    fun(Port, _, _, FDs) -> shutdown_port(Port, shutdown, FDs) end,
+    Registry
+  ),
+  ets:delete(Registry),
   ok.
+
+%% @doc Handle all events from subprocess supervisor.
+%%
+%%   All events up until shutdown event or port exit are received. Exit info
+%%   for `subproc'-type ports is forwarded as usual (those ports are
+%%   unregistered). If a port during this phase terminates, its descriptors
+%%   are automatically closed as well.
+
+-spec shutdown_collect_events(port(), ets:tab()) ->
+  term().
+
+shutdown_collect_events(MasterPort, Registry) ->
+  receive
+    {subproc_sup, MasterPort, EventData, FDs} = Message ->
+      case process_event(Message, Registry) of
+        processed ->
+          shutdown_collect_events(MasterPort, Registry);
+        {shutdown, 0 = _AliveChildren} ->
+          subproc_master_driver:close(MasterPort);
+        {shutdown, AliveChildren} when AliveChildren > 0 ->
+          error_logger:warning_report(subproc_master, [
+            "shutdown incomplete",
+            {alive_children, AliveChildren}
+          ]),
+          subproc_master_driver:close(MasterPort);
+        {error, unknown_event} ->
+          error_logger:warning_report(subproc_master, [
+            "unrecognized event from subprocess supervisor",
+            {event_data, EventData},
+            {fds, FDs}
+          ]),
+          shutdown_collect_events(MasterPort, Registry)
+      end;
+    {'EXIT', MasterPort, Reason} ->
+      error_logger:warning_report(subproc_master, [
+        "early exit from supervisor port",
+        {exit, Reason}
+      ]),
+      subproc_master_driver:close(MasterPort);
+    {'EXIT', Port, _Reason} ->
+      port_autoclose(Port, Registry),
+      shutdown_collect_events(MasterPort, Registry)
+  end.
+
+%% @doc Send a signal to a port and close its file descriptors recorded for
+%%   autoclosing.
+
+-spec shutdown_port(port(), term(), [subproc:os_fd()]) ->
+  term().
+
+shutdown_port(Port, Reason, CloseFDs) ->
+  try
+    exit(Port, Reason),
+    receive {'EXIT', Port, _} -> ok end
+  catch % exit() could fail on already closed port
+    _:_ -> ignore
+  end,
+  lists:foreach(fun subproc_unix:close/1, CloseFDs).
 
 %% }}}
 %%----------------------------------------------------------
@@ -243,15 +324,7 @@ handle_call({exec, Owner, Command, Args, OptionList} = _Request, _From,
         {subproc, Port, ID} ->
           try subproc_worker_driver:controlling_process(Port, Owner) of
             _ ->
-              % preserve (restore) link to `Port', so we can monitor its
-              % shutdown
-              link(Port),
-              % XXX: supervisor guarantees `ID' to be unique, Erlang runtime
-              % guarantees `Port' to be unique
-              true = ets:insert_new(Registry, [
-                {ID, Port, subproc},  % port type
-                {Port, ID, []}        % FDs to close on port termination
-              ]),
+              true = port_register(Port, ID, Registry),
               {reply, {ok, Port}, State}
           catch
             _:_ ->
@@ -270,38 +343,13 @@ handle_call({exec, Owner, Command, Args, OptionList} = _Request, _From,
       {reply, {error, Reason}, State}
   end;
 
-handle_call({reg, Port, CloseFDs} = _Request, _From,
-            State = #state{registry = Registry}) when is_port(Port) ->
-  % register a port from raw FDs
-  Reply = try link(Port) of
-    _ ->
-      case ets:insert_new(Registry, {Port, undefined, CloseFDs}) of
-        true -> ok;
-        false -> {error, badarg}
-      end
-  catch
-    _:_ -> {error, badarg}
-  end,
-  {reply, Reply, State};
-
 handle_call({reg, Port, PortType, ID, CloseFDs} = _Request, _From,
-            State = #state{registry = Registry})
-when is_port(Port), is_list(CloseFDs) ->
+            State = #state{registry = Registry}) ->
   % NOTE: only native ports need registering this way
-  Reply = try link(Port) of
-    _ ->
-      Records = [
-        {ID, Port, PortType},
-        {Port, ID, CloseFDs}
-      ],
-      case ets:insert_new(Registry, Records) of
-        true -> ok;
-        false -> {error, badarg}
-      end
-  catch
-    _:_ -> {error, badarg}
-  end,
-  {reply, Reply, State};
+  case port_register(Port, ID, PortType, CloseFDs, Registry) of
+    true -> {reply, ok, State};
+    false -> {reply, {error, badarg}, State}
+  end;
 
 handle_call({open_port_failed, ID} = _Request, _From,
             State = #state{port = MasterPort}) ->
@@ -310,17 +358,13 @@ handle_call({open_port_failed, ID} = _Request, _From,
 
 handle_call({kill, What, Signal} = _Request, _From,
             State = #state{port = MasterPort, registry = Registry}) ->
-  Reply = case ets:lookup(Registry, What) of
-    [{Port, undefined = _ID, _CloseFDs}] when is_port(Port) ->
-      {error, badarg};
-    [{Port, ID, _CloseFDs}] when is_port(Port) ->
-      subproc_master_driver:kill(MasterPort, ID, Signal);
-    [{ID, Port, _PortType}] when is_port(Port) ->
-      subproc_master_driver:kill(MasterPort, ID, Signal);
-    [] ->
-      {error, badarg}
-  end,
-  {reply, Reply, State};
+  case port_find_id(What, Registry) of
+    {ok, ID} ->
+      Reply = subproc_master_driver:kill(MasterPort, ID, Signal),
+      {reply, Reply, State};
+    undefined ->
+      {reply, {error, badarg}, State}
+  end;
 
 handle_call(reload = _Request, _From, State = #state{port = MasterPort}) ->
   Result = case shutdown_options() of
@@ -347,38 +391,24 @@ handle_cast(_Request, State) ->
 
 handle_info({subproc_sup, MasterPort, EventData, FDs} = Message,
             State = #state{port = MasterPort, registry = Registry}) ->
-  % NOTE: `exec' and `exec_error' messages can only arrive on exec request,
-  % and we don't have such requests running asynchronously
-  case subproc_master_driver:decode_event(Message) of
-    {TermType, ID, TermData} when TermType == exit; TermType == signal ->
-      % subprocess terminated; `TermData' interpretation:
-      %   `TermType = exit': `ExitCode'
-      %   `TermType = signal': `{SigNum, SigName}'
-      case ets:lookup(Registry, ID) of
-        [{ID, Port, subproc = _PortType}] ->
-          try
-            unlink(Port),
-            subproc_worker_driver:terminated(Port, {TermType, TermData})
-          catch
-            _:_ -> ignore
-          end,
-          ets:delete(Registry, ID),
-          ets:delete(Registry, Port);
-        [{ID, _Port, native = _PortType}] ->
-          % wait for read descriptor to hit EOF and port to close
-          ignore;
-        [] ->
-          ignore
-      end,
+  case process_event(Message, Registry) of
+    processed ->
       {noreply, State};
-    {shutdown, 0 = _AliveChildren} ->
+    {shutdown, 0 = AliveChildren} ->
+      subproc_master_driver:close(MasterPort),
+      error_logger:warning_report(subproc_master, [
+        "unexpected shutdown",
+        {alive_children, AliveChildren}
+      ]),
       NewState = State#state{port = undefined},
       {stop, normal, NewState};
     {shutdown, AliveChildren} when AliveChildren > 0 ->
+      subproc_master_driver:close(MasterPort),
       error_logger:warning_report(subproc_master, [
-        "shutdown incomplete",
+        "unexpected shutdown incomplete",
         {alive_children, AliveChildren}
       ]),
+      subproc_master_driver:close(MasterPort),
       NewState = State#state{port = undefined},
       {stop, normal, NewState};
     {error, unknown_event} ->
@@ -392,26 +422,15 @@ handle_info({subproc_sup, MasterPort, EventData, FDs} = Message,
 
 handle_info({'EXIT', MasterPort, Reason} = _Message,
             State = #state{port = MasterPort}) ->
-  % TODO: inform worker ports of master's death
+  subproc_master_driver:close(MasterPort),
   NewState = State#state{port = undefined},
   {stop, Reason, NewState};
 
 handle_info({'EXIT', Port, _Reason} = _Message,
-            State = #state{port = MasterPort, registry = Registry})
-when is_port(Port) ->
-  case ets:lookup(Registry, Port) of
-    [{Port, undefined = _ID, CloseFDs}] ->
-      % it was a port that was't associated with any process
-      lists:foreach(fun subproc_unix:close/1, CloseFDs),
-      ets:delete(Registry, Port);
-    [{Port, ID, CloseFDs}] ->
-      % if the subprocess already terminated, an error can be ignored
-      subproc_master_driver:kill(MasterPort, ID, default),
-      lists:foreach(fun subproc_unix:close/1, CloseFDs),
-      ets:delete(Registry, ID),
-      ets:delete(Registry, Port);
-    [] ->
-      ignore
+            State = #state{port = MasterPort, registry = Registry}) ->
+  case port_autoclose(Port, Registry) of
+    undefined -> ignore;
+    ID -> subproc_master_driver:kill(MasterPort, ID, default)
   end,
   {noreply, State};
 
@@ -488,6 +507,39 @@ close_stdio({in_out, {FDR, FDW}} = _STDIO) ->
 
 %%%---------------------------------------------------------------------------
 
+%% @doc Process an event coming from subprocess supervisor.
+%%
+%%   `subproc'-type ports are unregistered and informed that their subprocess
+%%   terminated.
+
+-spec process_event(subproc_master_driver:event_message(), ets:tab()) ->
+  processed | {shutdown, non_neg_integer()} | {error, unknown_event}.
+
+process_event(Message, Registry) ->
+  % NOTE: `exec' and `exec_error' messages can only arrive on exec request,
+  % and we don't have such requests running asynchronously
+  case subproc_master_driver:decode_event(Message) of
+    {TermType, ID, TermData} when TermType == exit; TermType == signal ->
+      % subprocess terminated; `TermData' interpretation:
+      %   `TermType = exit': `ExitCode'
+      %   `TermType = signal': `{SigNum, SigName}'
+      case port_unregister(ID, Registry) of
+        {ok, subproc, Port} ->
+          subproc_worker_driver:terminated(Port, {TermType, TermData});
+        {ok, native, _Port} ->
+          ignore;
+        none ->
+          ignore
+      end,
+      processed;
+    {shutdown, AliveChildren} ->
+      {shutdown, AliveChildren};
+    {error, unknown_event} ->
+      {error, unknown_event}
+  end.
+
+%%%---------------------------------------------------------------------------
+
 %% @doc Split options into categories.
 %%
 %%   The categories are: exec options for unix subproc supervisor, port
@@ -545,6 +597,124 @@ option(Option, Opts = #opts{exec_options = EOpts, port_options = POpts}) ->
     true  -> Opts#opts{exec_options = [Option | EOpts]};
     false -> Opts#opts{port_options = [Option | POpts]}
   end.
+
+%%%---------------------------------------------------------------------------
+%%% port registry
+
+%% @doc Register `subproc'-type port for watching.
+
+-spec port_register(port(), subproc_master_driver:subproc_id() | undefined,
+                    ets:tab()) ->
+  boolean().
+
+port_register(Port, ID, Registry) ->
+  % FDs are an empty list, since the port can close them on its own
+  port_register(Port, ID, subproc, [], Registry).
+
+%% @doc Register a port for watching.
+
+-spec port_register(port(), subproc_master_driver:subproc_id() | undefined,
+                    subproc | native, [subproc:os_fd()], ets:tab()) ->
+  boolean().
+
+port_register(Port, ID, PortType, FDs, Registry)
+when is_port(Port), is_list(FDs) ->
+  try link(Port) of
+    _ ->
+      Records = case ID of
+        undefined -> [{Port, ID, PortType, FDs}];
+        _ when is_integer(ID) -> [{Port, ID, PortType, FDs}, {ID, Port}]
+      end,
+      ets:insert_new(Registry, Records)
+  catch
+    _:_ -> false
+  end.
+
+%% @doc Find subprocess ID for specified key.
+
+-spec port_find_id(port() | subproc_master_driver:subproc_id(), ets:tab()) ->
+  {ok, subproc_master_driver:subproc_id()} | undefined.
+
+port_find_id(Key, Registry) ->
+  case ets:lookup(Registry, Key) of
+    [{_Port, undefined = _ID, _PortType, _CloseFDs}] -> undefined;
+    [{_Port, ID, _PortType, _CloseFDs}] -> {ok, ID};
+    [{ID, _Port}] -> {ok, ID};
+    [] -> undefined
+  end.
+
+%% @doc Unregister a port whose subprocess terminated.
+
+-spec port_unregister(subproc_master_driver:subproc_id(), ets:tab()) ->
+  {ok, subproc | native, port()} | none.
+
+%port_unregister(ID, _Registry) when not is_integer(ID) ->
+%  none;
+port_unregister(ID, Registry) when is_integer(ID) ->
+  case ets:lookup(Registry, ID) of
+    [{ID, Port}] ->
+      case ets:lookup(Registry, Port) of
+        [{Port, ID, subproc, _FDs}] ->
+          try
+            unlink(Port)
+          catch
+            _:_ -> ignore
+          end,
+          ets:delete(Registry, ID),
+          ets:delete(Registry, Port),
+          {ok, subproc, Port};
+        [{Port, ID, native, _FDs}] ->
+          % XXX: don't unlink and keep the descriptors record, so autoclose
+          % works
+          {ok, native, Port}
+      end;
+    [] ->
+      none
+  end.
+
+%% @doc Close descriptors recorded for autoclose on port termination.
+%%
+%%   Function deletes the port from the registry.
+
+-spec port_autoclose(port(), ets:tab()) ->
+  subproc_master_driver:subproc_id() | undefined.
+
+port_autoclose(Port, Registry) ->
+  case ets:lookup(Registry, Port) of
+    [{Port, ID, _PortType, CloseFDs}] ->
+      % port that wasn't associated with any subprocess
+      lists:foreach(fun subproc_unix:close/1, CloseFDs),
+      ets:delete(Registry, ID), % safe even for `ID = undefined'
+      ets:delete(Registry, Port),
+      ID;
+    [] ->
+      undefined
+  end.
+
+%% @doc Call a function on each port
+
+-spec port_foreach(Fun, ets:tab()) ->
+  ok
+  when Fun :: fun((Port, ID, PortType, CloseFDs) -> term()),
+       Port :: port(),
+       ID :: subproc_master_driver:subproc_id(),
+       PortType :: subproc | native,
+       CloseFDs :: [subproc:os_fd()].
+
+port_foreach(Fun, Registry) when is_function(Fun, 4) ->
+  ets:foldl(fun each_port/2, Fun, Registry),
+  ok.
+
+%% @doc Workhorse for {@link port_foreach/2}.
+
+-spec each_port(tuple(), fun()) ->
+  fun().
+
+each_port({Port, ID, PortType, FDs} = _Entry, Fun) ->
+  Fun(Port, ID, PortType, FDs),
+  Fun;
+each_port({_ID, _Port} = _Entry, Fun) ->
+  Fun.
 
 %%%---------------------------------------------------------------------------
 
