@@ -117,8 +117,7 @@ init([Socket] = _Args) ->
 
 terminate(_Arg, _State = #state{socket = Socket, rsyncd = Subproc}) ->
   gen_tcp:close(Socket),
-  subproc_worker_driver:close(Subproc, read_write),
-  % TODO: wait for the process to terminate
+  subproc:close(Subproc),
   ok.
 
 %% }}}
@@ -145,49 +144,51 @@ handle_cast(_Request, State) ->
 handle_info({subproc, Subproc, Data} = _Message,
             State = #state{socket = Socket, rsyncd = Subproc}) ->
   gen_tcp:send(Socket, Data),
-  subproc_worker_driver:setopts(Subproc, [{active, once}]),
+  subproc:setopts(Subproc, [{active, once}]),
   {noreply, State};
 
 handle_info({subproc_closed, Subproc} = _Message,
             State = #state{rsyncd = Subproc}) ->
-  % TODO: this comes before exit or signal message, don't stop just yet
-  {stop, normal, State};
+  % this comes before exit or signal message, don't stop just yet
+  {noreply, State};
 
 handle_info({subproc_error, Subproc, Reason} = _Message,
             State = #state{rsyncd = Subproc}) ->
   rsyncd_log:warn("rsync port terminated abnormally",
                   [{error, {term, Reason}}]),
+  subproc:signal(Subproc),
   {stop, normal, State};
 
-handle_info({subproc_exit, Subproc, 0 = _ExitCode} = _Message,
+handle_info({subproc_terminated, Subproc, exit, 0} = _Message,
             State = #state{rsyncd = Subproc}) ->
   {stop, normal, State};
-handle_info({subproc_exit, Subproc, ExitCode} = _Message,
+handle_info({subproc_terminated, Subproc, exit, ExitCode} = _Message,
             State = #state{rsyncd = Subproc}) ->
   rsyncd_log:warn("rsync process exited with an error",
                   [{exit_code, ExitCode}]),
   {stop, normal, State};
-
-handle_info({subproc_signal, Subproc, {_SigNum, SigName}} = _Message,
+handle_info({subproc_terminated, Subproc, signal, {_, SigName}} = _Message,
             State = #state{rsyncd = Subproc}) ->
   rsyncd_log:warn("rsync process killed", [{signal, {term, SigName}}]),
   {stop, normal, State};
 
 handle_info({tcp, Socket, Data} = _Message,
             State = #state{socket = Socket, rsyncd = Subproc}) ->
-  subproc_worker_driver:send(Subproc, Data),
+  subproc:send(Subproc, Data),
   inet:setopts(Socket, [{active, once}]),
   {noreply, State};
 
 handle_info({tcp_closed, Socket} = _Message,
-            State = #state{socket = Socket}) ->
-  {stop, normal, State};
+            State = #state{socket = Socket, rsyncd = Subproc}) ->
+  subproc:close(Subproc, read_write),
+  {noreply, State};
 
 handle_info({tcp_error, Socket, Reason} = _Message,
-            State = #state{socket = Socket}) ->
+            State = #state{socket = Socket, rsyncd = Subproc}) ->
   rsyncd_log:warn("TCP socket terminated abnormally",
                   [{error, {term, Reason}}]),
-  {stop, normal, State};
+  subproc:close(Subproc, read_write),
+  {noreply, State};
 
 %% unknown messages
 handle_info(_Message, State) ->
@@ -234,22 +235,22 @@ rsync_config() ->
   end.
 
 -spec rsync_exec(file:filename(), file:filename(),
-                 filename:filename() | undefined) ->
-  {ok, subproc:handle(), subproc_unix:os_pid()} | {error, term()}.
+                 file:filename() | undefined) ->
+  {ok, subproc:handle(), subproc:os_pid()} | {error, term()}.
 
 rsync_exec(RsyncPath, ConfigPath, Cwd) ->
   RsyncArgs = ["--daemon", "--config", ConfigPath],
   BasicOptions = [
     {stdio, bidir}, {type, socket}, {termsig, hup},
-    binary, {packet, raw}, {active, once}
+    binary, {packet, raw}, {active, once}, {exit_status, true}
   ],
   Options = case Cwd of
     undefined -> BasicOptions;
     _ -> [{cd, Cwd} | BasicOptions]
   end,
-  case subproc_master:exec(RsyncPath, RsyncArgs, Options) of
+  case subproc:exec(RsyncPath, RsyncArgs, Options) of
     {ok, Subproc} ->
-      {ok, [{pid, PID}]} = subproc_worker_driver:getopts(Subproc, [pid]),
+      {ok, [{pid, PID}]} = subproc:getopts(Subproc, [pid]),
       {ok, Subproc, PID};
     {error, Reason} ->
       {error, Reason}
