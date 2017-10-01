@@ -118,33 +118,50 @@ read_all(Port) ->
 
 == Architecture ==
 
-<b>TODO</b>
+To implement communication modes known from socket modules (`{active,false}'
+and `{active,once}'), `subproc' uses custom port driver, `subproc_drv'.
 
-=== Erlang ===
+Subprocesses are executed from a separate OS process, which is started as an
+executable `subproc_unix_supervisor'. Separate OS process enables `subproc' to
+clean up even in the face of crash of whole Erlang VM, while using an
+executable displays a meaningful process name in process list (`ps(1)') and
+allows to use SUID/SGID permissions to spawn processes as different users than
+Erlang runs as.
 
-<b>TODO</b>
+To execute `subproc_unix_supervisor' and communicate with it, another port
+driver called `subproc_sup_drv' is employed. This port driver has only one
+instance, owned by a process in `subproc' supervision tree.
 
-supervisor, driver loader, reaper, master
+Mapping between spawned subprocesses and ports is remembered in `subproc'
+supervision tree as well. This allows user to send unix signals even to
+subprocesses with a native port as a communication handle.
 
-master:
-<ul>
-  <li>keeps port to communicate with `subproc_unix_supervisor'</li>
-  <li>tracks subproc (kill requests) and native ports (kill requests,
-      autoclose descriptors)</li>
-  <li>sends exec and kill requests to `subproc_unix_supervisor' (exec: spawns
-      subproc or native port)</li>
-  <li>receives events (spawn, spawn error, exited, killed, shutdown) and
-      forwards exited/killed to appropriate to subproc ports</li>
-</ul>
+Each of the port drivers has its own low-level API module that wraps
+`erlang:port_*()' function calls.
 
-reaper calls `waitpid()' on `subproc_unix_supervisor' PID when master crashes
+A limited number of unix API functions is provided {@link subproc_unix}
+module, which is implemented as a NIF library. This module also provides few
+translation functions between names and numbers (`errno(3)' and signals).
 
-driver loader calls `erl_ddll:load()' on two drivers and makes sure that NIF
-module is loaded.
+=== Supervision tree ===
 
-=== C code ===
+There are three worker processes in the supervision tree.
 
-<b>TODO</b>
+`subproc_master' is the central process for the application. It opens
+`subproc_sup_drv' port and orders it to execute `subproc_unix_supervisor'.
+It also translates {@link subproc:exec/3} arguments to requests to
+`subproc_unix_supervisor' and execution results back to returned values,
+forwards OS process termination events to `subproc'-type ports, forwards
+signal sending requests to `subproc_unix_supervisor', and closes file
+descriptors after native ports terminate.
 
-`chmod u+s subproc/priv/subproc_unix_supervisor'
+`subproc_mdrv_reaper' monitors the port (`subproc_sup_drv') owned by
+`subproc_master' and cleans up the zombie process left after the port is
+closed. Since closing port cannot wait for `subproc_unix_supervisor' to
+exit (it can take seconds before children exit themselves), it needs to be
+done on Erlang's side. Separate Erlang process ensures that a crash of
+`subproc_master' doesn't leave zombies.
+
+`subproc_driver_loader' is tasked with loading and unloading port drivers and
+NIF library and does nothing beside that.
 

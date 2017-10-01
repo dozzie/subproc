@@ -3,6 +3,9 @@
 %%%   Module that exposes to Erlang selected functions from unix API and
 %%%   implements translation between symbolic constants and numeric values
 %%%   (signal numbers and <i>errno</i>).
+%%%
+%%%   Errors returned by functions from this module can be converted to
+%%%   human-readable message with {@link subproc:format_error/1}.
 %%% @end
 %%%---------------------------------------------------------------------------
 
