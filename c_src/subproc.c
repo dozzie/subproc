@@ -1195,8 +1195,11 @@ static void cdrv_send_input(struct subproc_context *context,
       cdrv_stop_reading(context);
       cdrv_close_fd(context, FDR);
     } else { // {subproc_error, Port, Reason :: atom()}
+      char *error_atom = (error == ERROR_CLOSED) ?
+                           "closed" :
+                           erl_errno_id(error);
       ErlDrvTermData reply[] = {
-        ERL_DRV_ATOM, driver_mk_atom(erl_errno_id(error))
+        ERL_DRV_ATOM, driver_mk_atom(error_atom)
       };
 
       cdrv_send_active(context->erl_port, "subproc_error", reply,
