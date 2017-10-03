@@ -503,6 +503,7 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       case 1:
         cdrv_interrupt_read(context, ERROR_CLOSED);
         cdrv_close_fd(context, FDR);
+        context->eof_sent = 1;
       break;
       case 2:
         cdrv_interrupt_write(context, ERROR_CLOSED);
@@ -512,6 +513,7 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
         cdrv_interrupt_read(context, ERROR_CLOSED);
         cdrv_interrupt_write(context, ERROR_CLOSED);
         cdrv_close_fd(context, FDR | FDW);
+        context->eof_sent = 1;
       break;
       default:
         // never happens
