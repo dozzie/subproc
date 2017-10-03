@@ -1,0 +1,42 @@
+#!/usr/bin/perl
+
+sub long_data($);
+
+if ($ARGV[0] eq "line") {
+  printf "%s\n", $_ for qw{ one two three four };
+} elsif ($ARGV[0] eq "1") {
+  print pack "Ca*", length($_), $_ for qw{ one two three four };
+} elsif ($ARGV[0] eq "2") {
+  print pack "na*", length($_), $_ for qw{ one two three four };
+} elsif ($ARGV[0] eq "4") {
+  print pack "Na*", length($_), $_ for qw{ one two three four };
+} elsif ($ARGV[0] eq "line-incomplete") {
+  printf "%s\n", $_ for qw{ one two three four };
+  printf "incomplete";
+} elsif ($ARGV[0] eq "line-too-big") {
+  printf "%s\n", $_ for qw{ one two three four };
+  printf "%s\n", long_data 80;
+} elsif ($ARGV[0] eq "line-4") {
+  printf "%s\n", $_ for qw{ l-one l-two l-three l-four };
+  print pack "Na*", length($_), $_ for qw{ 4-one 4-two 4-three 4-four };
+} elsif ($ARGV[0] eq "4-line") {
+  print pack "Na*", length($_), $_ for qw{ 4-one 4-two 4-three 4-four };
+  printf "%s\n", $_ for qw{ l-one l-two l-three l-four };
+} elsif ($ARGV[0] eq "4-incomplete") {
+  print pack "Na*", length($_), $_ for qw{ one two three four };
+  print pack "Na*", 10, "123456789";
+} elsif ($ARGV[0] eq "4-incomplete-header") {
+  print pack "Na*", length($_), $_ for qw{ one two three four };
+  print pack "C", 0;
+} elsif ($ARGV[0] eq "4-too-big") {
+  print pack "Na*", length($_), $_ for qw{ one two three four };
+  print pack "Na*", 80, long_data 80;
+}
+
+sub long_data($) {
+  my ($size) = @_;
+
+  my $data = join "", "[", "a" .. "z", "A" .. "Z", "0" .. "9", "]";
+  my $data = $data x int($size / length($data) + 1);
+  return substr $data, 0, $size;
+}
