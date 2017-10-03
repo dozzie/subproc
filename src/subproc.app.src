@@ -1,6 +1,6 @@
 {application, subproc, [
   {description, "unix subprocess manager"},
-  {vsn, "0.0.0"},
+  {vsn, "0.1.0"},
   {registered, [
     subproc_sup,
     subproc_driver_loader,
