@@ -341,6 +341,10 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
             O_NONBLOCK | fcntl(context->fdin, F_GETFL));
       ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdin);
       driver_select(context->erl_port, event, ERL_DRV_USE, 1);
+    } else {
+      // actually, the descriptor was never opened in the first place, but
+      // it's situation similar enough
+      context->eof_sent = 1;
     }
 
     if (context->fdout > 0) {
