@@ -1667,6 +1667,9 @@ static int32_t packet_update_read(struct packet *ctx, size_t len)
         if (ctx->pending_used < hlen)
           return PKT_ERR_NOT_READY;
 
+        // XXX: (ctx->pending_used == hlen), because this is how much data
+        // last call to packet_buffer() allowed to read
+
         if (ctx->packet_mode == pfx1)
           ctx->target_size = (uint8_t)ctx->pending_start[0];
         else if (ctx->packet_mode == pfx2)
@@ -1676,6 +1679,9 @@ static int32_t packet_update_read(struct packet *ctx, size_t len)
 
         ctx->pending_used = 0;
         ctx->pending_start = ctx->pending;
+
+        if (ctx->target_size > ctx->max_size)
+          return PKT_ERR_EMSGSIZE;
 
         if (ctx->target_size == 0)
           return 0; // valid and complete packet
