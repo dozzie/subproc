@@ -343,356 +343,357 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
 {
   struct subproc_context *context = (struct subproc_context *)drv_data;
 
-  if (command == 0) { // port initialization {{{
-    // setting file descriptors and maybe PID
+  switch (command) {
+    case 0: // port initialization {{{
+      // setting file descriptors and maybe PID
 
-    if (context->process_status != process_not_initialized)
-      return -1;
+      if (context->process_status != process_not_initialized)
+        return -1;
 
-    if (len != 14)
-      return -1;
+      if (len != 14)
+        return -1;
 
-    int fdin = unpack32((unsigned char *)buf);
-    int fdout = unpack32((unsigned char *)(buf + 4));
-    pid_t pid = unpack32((unsigned char *)(buf + 8));
+      int fdin = unpack32((unsigned char *)buf);
+      int fdout = unpack32((unsigned char *)(buf + 4));
+      pid_t pid = unpack32((unsigned char *)(buf + 8));
 
-    // check if the descriptors, if defined, have appropriate modes
-    if ((fdin >= 0 && !cdrv_check_fd_mode(fdin, FDR)) ||
-        (fdout >= 0 && !cdrv_check_fd_mode(fdout, FDW)))
-      return -1;
+      // check if the descriptors, if defined, have appropriate modes
+      if ((fdin >= 0 && !cdrv_check_fd_mode(fdin, FDR)) ||
+          (fdout >= 0 && !cdrv_check_fd_mode(fdout, FDW)))
+        return -1;
 
-    context->fdin = fdin;
-    context->fdout = fdout;
-    if (pid > 0) {
-      context->pid = pid;
-      context->process_status = process_alive;
-    } else {
-      context->process_status = process_undefined;
-    }
-    context->close_fds = buf[12];
-    context->close_on_exit = buf[13];
+      context->fdin = fdin;
+      context->fdout = fdout;
+      if (pid > 0) {
+        context->pid = pid;
+        context->process_status = process_alive;
+      } else {
+        context->process_status = process_undefined;
+      }
+      context->close_fds = buf[12];
+      context->close_on_exit = buf[13];
 
-    if (context->fdin > 0) {
-      fcntl(context->fdin, F_SETFL,
-            O_NONBLOCK | fcntl(context->fdin, F_GETFL));
-      ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdin);
-      driver_select(context->erl_port, event, ERL_DRV_USE, 1);
-    } else {
-      // actually, the descriptor was never opened in the first place, but
-      // it's situation similar enough
-      context->eof_sent = 1;
-    }
+      if (context->fdin > 0) {
+        fcntl(context->fdin, F_SETFL,
+              O_NONBLOCK | fcntl(context->fdin, F_GETFL));
+        ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdin);
+        driver_select(context->erl_port, event, ERL_DRV_USE, 1);
+      } else {
+        // actually, the descriptor was never opened in the first place, but
+        // it's situation similar enough
+        context->eof_sent = 1;
+      }
 
-    if (context->fdout > 0) {
-      fcntl(context->fdout, F_SETFL,
-            O_NONBLOCK | fcntl(context->fdout, F_GETFL));
-      ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdout);
-      driver_select(context->erl_port, event, ERL_DRV_USE, 1);
-    }
+      if (context->fdout > 0) {
+        fcntl(context->fdout, F_SETFL,
+              O_NONBLOCK | fcntl(context->fdout, F_GETFL));
+        ErlDrvEvent event = (ErlDrvEvent)((long int)context->fdout);
+        driver_select(context->erl_port, event, ERL_DRV_USE, 1);
+      }
 
-    return 0;
-  } // }}}
+      return 0;
+    break; // }}}
 
-  if (command == 1) { // setopts() {{{
+    case 1: // setopts() {{{
 
-    if (len != 8)
-      return -1;
+      if (len != 8)
+        return -1;
 
-    enum read_mode read_mode;
-    int send_term_info;
-    enum data_mode data_mode;
-    enum packet_mode packet_mode;
+      enum read_mode read_mode;
+      int send_term_info;
+      enum data_mode data_mode;
+      enum packet_mode packet_mode;
 
-    switch (buf[0]) {
-      case 0: read_mode = context->read_mode; break;
-      case 1: read_mode = passive; break;
-      case 2: read_mode = active; break;
-      case 3: read_mode = once; break;
-      default: return -1;
-    }
-    switch (buf[1]) {
-      case 0: send_term_info = context->send_term_info; break;
-      case 1: send_term_info = 0 /* false */; break;
-      case 2: send_term_info = 1 /* true */; break;
-      default: return -1;
-    }
-    switch (buf[2]) {
-      case 0: data_mode = context->data_mode; break;
-      case 1: data_mode = string; break;
-      case 2: data_mode = binary; break;
-      default: return -1;
-    }
-    switch (buf[3]) {
-      case 0: packet_mode = context->packet_mode; break;
-      case 1: packet_mode = raw; break;
-      case 2: packet_mode = pfx1; break;
-      case 3: packet_mode = pfx2; break;
-      case 4: packet_mode = pfx4; break;
-      case 5: packet_mode = line; break;
-      default: return -1;
-    }
+      switch (buf[0]) {
+        case 0: read_mode = context->read_mode; break;
+        case 1: read_mode = passive; break;
+        case 2: read_mode = active; break;
+        case 3: read_mode = once; break;
+        default: return -1;
+      }
+      switch (buf[1]) {
+        case 0: send_term_info = context->send_term_info; break;
+        case 1: send_term_info = 0 /* false */; break;
+        case 2: send_term_info = 1 /* true */; break;
+        default: return -1;
+      }
+      switch (buf[2]) {
+        case 0: data_mode = context->data_mode; break;
+        case 1: data_mode = string; break;
+        case 2: data_mode = binary; break;
+        default: return -1;
+      }
+      switch (buf[3]) {
+        case 0: packet_mode = context->packet_mode; break;
+        case 1: packet_mode = raw; break;
+        case 2: packet_mode = pfx1; break;
+        case 3: packet_mode = pfx2; break;
+        case 4: packet_mode = pfx4; break;
+        case 5: packet_mode = line; break;
+        default: return -1;
+      }
 
-    if (read_mode != passive && context->read_mode == passive) {
-      // change from passive to active mode
-      cdrv_interrupt_read(context, EINTR);
-      // NOTE: no need to stop reading, since the new mode is one of the
-      // active ones and it will be enabled back soon enough
-      //cdrv_stop_reading(context);
-    } else if (read_mode == passive && context->read_mode != passive) {
-      // change from active to passive mode
-      cdrv_stop_reading(context);
-    }
+      if (read_mode != passive && context->read_mode == passive) {
+        // change from passive to active mode
+        cdrv_interrupt_read(context, EINTR);
+        // NOTE: no need to stop reading, since the new mode is one of the
+        // active ones and it will be enabled back soon enough
+        //cdrv_stop_reading(context);
+      } else if (read_mode == passive && context->read_mode != passive) {
+        // change from active to passive mode
+        cdrv_stop_reading(context);
+      }
 
-    if (send_term_info && !context->send_term_info &&
-        (context->process_status == process_exited ||
-         context->process_status == process_killed)) {
-      cdrv_shutdown_send_exit(context);
-      send_term_info = 0; // mark the term info as already sent
-    }
+      if (send_term_info && !context->send_term_info &&
+          (context->process_status == process_exited ||
+           context->process_status == process_killed)) {
+        cdrv_shutdown_send_exit(context);
+        send_term_info = 0; // mark the term info as already sent
+      }
 
-    context->read_mode = read_mode;
-    context->send_term_info = send_term_info;
-    context->data_mode = data_mode;
-    context->packet_mode = packet_mode;
+      context->read_mode = read_mode;
+      context->send_term_info = send_term_info;
+      context->data_mode = data_mode;
+      context->packet_mode = packet_mode;
 
-    size_t max_packet_size = unpack32((unsigned char *)(buf + 4));
-    if (max_packet_size > MAX_PACKET_SIZE)
-      context->max_packet_size = MAX_PACKET_SIZE;
-    else if (max_packet_size > 0)
-      context->max_packet_size = max_packet_size;
+      size_t max_packet_size = unpack32((unsigned char *)(buf + 4));
+      if (max_packet_size > MAX_PACKET_SIZE)
+        context->max_packet_size = MAX_PACKET_SIZE;
+      else if (max_packet_size > 0)
+        context->max_packet_size = max_packet_size;
 
-    if (context->read_mode != passive) {
-      // one of the active modes
+      if (context->read_mode != passive) {
+        // one of the active modes
+
+        if (context->fdin < 0 && !context->eof_sent) {
+          // shutdown and some data left to send
+          if (context->read_mode == active) {
+            if (cdrv_shutdown_send_data(context, ERL_PID_DOESNT_MATTER, 0, 0) > 0)
+              // we still need to send EOF
+              cdrv_shutdown_send_data(context, ERL_PID_DOESNT_MATTER, 0, 0);
+          } else { // context->read_mode == once
+            cdrv_shutdown_send_data(context, ERL_PID_DOESNT_MATTER, 0, 1);
+          }
+          return 0;
+        }
+
+        int error;
+        int result = cdrv_set_reading(context, ERL_PID_DOESNT_MATTER,
+                                      READ_ACTIVE, 0, &error);
+        // ERROR_CLOSED (fdin closed) can/should be ignored, but other errors
+        // are important
+        if (result < 0 && error != ERROR_CLOSED) {
+          ErlDrvTermData reply[] = {
+            ERL_DRV_ATOM, driver_mk_atom(erl_errno_id(error))
+          };
+
+          cdrv_send_active(context->erl_port, atom_subproc_error, reply,
+                           sizeof(reply) / sizeof(reply[0]), 1);
+          context->eof_sent = 1;
+        }
+      }
+
+      return 0;
+    break; // }}}
+
+    case 2: // getopts() {{{
+
+      // this should never be called
+      if (12 > rlen) *rbuf = driver_alloc(12);
+
+      switch (context->read_mode) {
+        case passive: (*rbuf)[0] = 1; break;
+        case active:  (*rbuf)[0] = 2; break;
+        case once:    (*rbuf)[0] = 3; break;
+        default:      (*rbuf)[0] = 0; break; // never reached
+      }
+      switch (context->send_term_info) {
+        case 0:  (*rbuf)[1] = 1; break;
+        default: (*rbuf)[1] = 2; break;
+      }
+      switch (context->data_mode) {
+        case string: (*rbuf)[2] = 1; break;
+        case binary: (*rbuf)[2] = 2; break;
+        default:     (*rbuf)[2] = 0; break; // never reached
+      }
+      switch (context->packet_mode) {
+        case raw:  (*rbuf)[3] = 1; break;
+        case pfx1: (*rbuf)[3] = 2; break;
+        case pfx2: (*rbuf)[3] = 3; break;
+        case pfx4: (*rbuf)[3] = 4; break;
+        case line: (*rbuf)[3] = 5; break;
+        default:   (*rbuf)[3] = 0; break; // never reached
+      }
+      store32((unsigned char *)(*rbuf + 4), context->max_packet_size);
+
+      store32((unsigned char *)(*rbuf + 8),
+              (context->pid > 0) ? context->pid : 0);
+      return 12;
+    break; // }}}
+
+    case 3: // close(read|write|read_write) {{{
+
+      if (len != 1)
+        return -1;
+
+      switch (buf[0]) {
+        case 1:
+          cdrv_interrupt_read(context, ERROR_CLOSED);
+          cdrv_close_fd(context, FDR);
+          context->eof_sent = 1;
+        break;
+        case 2:
+          cdrv_interrupt_write(context, ERROR_CLOSED);
+          cdrv_close_fd(context, FDW);
+        break;
+        case 3:
+          cdrv_interrupt_read(context, ERROR_CLOSED);
+          cdrv_interrupt_write(context, ERROR_CLOSED);
+          cdrv_close_fd(context, FDR | FDW);
+          context->eof_sent = 1;
+        break;
+        default:
+          return -1;
+      }
+
+      return 0;
+    break; // }}}
+
+    case 4: // recv() {{{
+      // recv(): request errors are signaled by sending a message
+
+      if (len != 4) // invalid request qualifies to an exception, not a reply
+        return -1;
+
+      ErlDrvTermData caller = driver_caller(context->erl_port);
+
+      uint32_t read_size = unpack32((unsigned char *)buf);
+      if (read_size != 0 && context->packet_mode != raw) {
+        // reading a specific number of bytes only allowed for raw packet mode
+        cdrv_send_error(context->erl_port, caller, EINVAL);
+        // don't set eof_sent
+        return 0;
+      }
 
       if (context->fdin < 0 && !context->eof_sent) {
         // shutdown and some data left to send
-        if (context->read_mode == active) {
-          if (cdrv_shutdown_send_data(context, ERL_PID_DOESNT_MATTER, 0, 0) > 0)
-            // we still need to send EOF
-            cdrv_shutdown_send_data(context, ERL_PID_DOESNT_MATTER, 0, 0);
-        } else { // context->read_mode == once
-          cdrv_shutdown_send_data(context, ERL_PID_DOESNT_MATTER, 0, 1);
-        }
+        cdrv_shutdown_send_data(context, caller, read_size, 1);
         return 0;
       }
 
       int error;
-      int result = cdrv_set_reading(context, ERL_PID_DOESNT_MATTER,
-                                    READ_ACTIVE, 0, &error);
-      // ERROR_CLOSED (fdin closed) can/should be ignored, but other errors
-      // are important
-      if (result < 0 && error != ERROR_CLOSED) {
-        ErlDrvTermData reply[] = {
-          ERL_DRV_ATOM, driver_mk_atom(erl_errno_id(error))
-        };
+      if (cdrv_set_reading(context, caller, READ_RECV, read_size, &error) != 0) {
+        cdrv_send_error(context->erl_port, caller, error);
+        // only set eof_sent on fatal errors
+        if (error != EINVAL && error != EALREADY)
+          context->eof_sent = 1;
+      } // on success, `cdrv_ready_input()' sends a reply
 
-        cdrv_send_active(context->erl_port, atom_subproc_error, reply,
-                         sizeof(reply) / sizeof(reply[0]), 1);
-        context->eof_sent = 1;
-      }
-    }
+      return 0;
+    break; // }}}
 
-    return 0;
-  } // }}}
+    case 5: // cancel_recv() {{{
+      // recv() cancel
+      if (context->fdin == -1)
+        // possibly a race between read() error and read timeout; don't crash
+        // the caller
+        return 0;
 
-  if (command == 2) { // getopts() {{{
-
-    // this should never be called
-    if (12 > rlen) *rbuf = driver_alloc(12);
-
-    switch (context->read_mode) {
-      case passive: (*rbuf)[0] = 1; break;
-      case active:  (*rbuf)[0] = 2; break;
-      case once:    (*rbuf)[0] = 3; break;
-      default:      (*rbuf)[0] = 0; break; // never reached
-    }
-    switch (context->send_term_info) {
-      case 0:  (*rbuf)[1] = 1; break;
-      default: (*rbuf)[1] = 2; break;
-    }
-    switch (context->data_mode) {
-      case string: (*rbuf)[2] = 1; break;
-      case binary: (*rbuf)[2] = 2; break;
-      default:     (*rbuf)[2] = 0; break; // never reached
-    }
-    switch (context->packet_mode) {
-      case raw:  (*rbuf)[3] = 1; break;
-      case pfx1: (*rbuf)[3] = 2; break;
-      case pfx2: (*rbuf)[3] = 3; break;
-      case pfx4: (*rbuf)[3] = 4; break;
-      case line: (*rbuf)[3] = 5; break;
-      default:   (*rbuf)[3] = 0; break; // never reached
-    }
-    store32((unsigned char *)(*rbuf + 4), context->max_packet_size);
-
-    store32((unsigned char *)(*rbuf + 8),
-            (context->pid > 0) ? context->pid : 0);
-    return 12;
-  } // }}}
-
-  if (command == 3) { // close(read|write|read_write) {{{
-
-    if (len != 1 || buf[0] < 1 || buf[0] > 3)
-      return -1;
-
-    switch (buf[0]) {
-      case 1:
-        cdrv_interrupt_read(context, ERROR_CLOSED);
-        cdrv_close_fd(context, FDR);
-        context->eof_sent = 1;
-      break;
-      case 2:
-        cdrv_interrupt_write(context, ERROR_CLOSED);
-        cdrv_close_fd(context, FDW);
-      break;
-      case 3:
-        cdrv_interrupt_read(context, ERROR_CLOSED);
-        cdrv_interrupt_write(context, ERROR_CLOSED);
-        cdrv_close_fd(context, FDR | FDW);
-        context->eof_sent = 1;
-      break;
-      default:
-        // never happens
+      // dangling recv() cancel is not allowed
+      if (context->read_mode != passive ||
+          (context->reading &&
+           driver_caller(context->erl_port) != context->read_reply_to))
         return -1;
-    }
 
-    return 0;
-  } // }}}
+      // since it's called from the same process that started the recv() call,
+      // we don't need to send any "call interrupted" messages
+      cdrv_stop_reading(context);
 
-  if (command == 4) { // recv() {{{
-    // recv(): request errors are signaled by sending a message
-
-    if (len != 4) // invalid request qualifies to an exception, not a reply
-      return -1;
-
-    ErlDrvTermData caller = driver_caller(context->erl_port);
-
-    uint32_t read_size = unpack32((unsigned char *)buf);
-    if (read_size != 0 && context->packet_mode != raw) {
-      // reading a specific number of bytes only allowed for raw packet mode
-      cdrv_send_error(context->erl_port, caller, EINVAL);
-      // don't set eof_sent
       return 0;
-    }
+    break; // }}}
 
-    if (context->fdin < 0 && !context->eof_sent) {
-      // shutdown and some data left to send
-      cdrv_shutdown_send_data(context, caller, read_size, 1);
-      return 0;
-    }
+    case 6: // subprocess terminated {{{
+      if (len != 2)
+        return -1;
 
-    int error;
-    if (cdrv_set_reading(context, caller, READ_RECV, read_size, &error) != 0) {
-      cdrv_send_error(context->erl_port, caller, error);
-      // only set eof_sent on fatal errors
-      if (error != EINVAL && error != EALREADY)
-        context->eof_sent = 1;
-    } // on success, `cdrv_ready_input()' sends a reply
+      if (context->process_status != process_alive)
+        return -1;
 
-    return 0;
-  } // }}}
+      switch (buf[0]) {
+        case 1: context->process_status = process_exited; break;
+        case 2: context->process_status = process_killed; break;
+        default: return -1;
+      }
+      context->exit_code = buf[1];
 
-  if (command == 5) { // cancel_recv() {{{
-    // recv() cancel
-    if (context->fdin == -1)
-      // possibly a race between read() error and read timeout; don't crash
-      // the caller
-      return 0;
+      if (context->fdin >= 0 && context->close_on_exit) {
+        cdrv_shutdown_initiate(context);
 
-    // dangling recv() cancel is not allowed
-    if (context->read_mode != passive ||
-        (context->reading &&
-         driver_caller(context->erl_port) != context->read_reply_to))
-      return -1;
+        if (context->read_mode == passive && !context->reading) {
+          // passive mode and no recv() in progress (nobody to send data to)
 
-    // since it's called from the same process that started the recv() call,
-    // we don't need to send any "call interrupted" messages
-    cdrv_stop_reading(context);
+          // nothing();
+        } else if (context->read_mode == passive || context->read_mode == once) {
+          // read/send exactly one packet (if passive mode, recv() is in
+          // progress and it has target packet size already set)
 
-    return 0;
-  } // }}}
+          cdrv_shutdown_send_data(context, context->read_reply_to, 0, 1);
+        } else { // (context->read_mode == active)
+          // read/send all packets
 
-  if (command == 6) { // subprocess terminated {{{
-    if (len != 2)
-      return -1;
+          // at least one data message was sent, send also EOF
+          if (cdrv_shutdown_send_data(context, ERL_PID_DOESNT_MATTER, 0, 0) > 0)
+            // we still need to send EOF
+            cdrv_shutdown_send_data(context, ERL_PID_DOESNT_MATTER, 0, 0);
+        }
 
-    if (context->process_status != process_alive)
-      return -1;
-
-    switch (buf[0]) {
-      case 1: context->process_status = process_exited; break;
-      case 2: context->process_status = process_killed; break;
-      default: return -1;
-    }
-    context->exit_code = buf[1];
-
-    if (context->fdin >= 0 && context->close_on_exit) {
-      cdrv_shutdown_initiate(context);
-
-      if (context->read_mode == passive && !context->reading) {
-        // passive mode and no recv() in progress (nobody to send data to)
-
-        // nothing();
-      } else if (context->read_mode == passive || context->read_mode == once) {
-        // read/send exactly one packet (if passive mode, recv() is in
-        // progress and it has target packet size already set)
-
-        cdrv_shutdown_send_data(context, context->read_reply_to, 0, 1);
-      } else { // (context->read_mode == active)
-        // read/send all packets
-
-        // at least one data message was sent, send also EOF
-        if (cdrv_shutdown_send_data(context, ERL_PID_DOESNT_MATTER, 0, 0) > 0)
-          // we still need to send EOF
-          cdrv_shutdown_send_data(context, ERL_PID_DOESNT_MATTER, 0, 0);
+        // no more poll() on fdin, all recv() calls will be satisfied within
+        // cdrv_control() callback
+        // NOTE: this needs to be called *after* cdrv_shutdown_send_data(),
+        // because the latter uses context->read_mode to select message
+        // recipient and format
+        cdrv_stop_reading(context);
       }
 
-      // no more poll() on fdin, all recv() calls will be satisfied within
-      // cdrv_control() callback
-      // NOTE: this needs to be called *after* cdrv_shutdown_send_data(),
-      // because the latter uses context->read_mode to select message
-      // recipient and format
-      cdrv_stop_reading(context);
-    }
+      // a recv() already got a proper reply above
+      //cdrv_interrupt_read(context, ERROR_CLOSED);
+      cdrv_interrupt_write(context, ERROR_CLOSED);
+      cdrv_close_fd(context, FDR_KEEP_PACKET | FDR | FDW);
 
-    // a recv() already got a proper reply above
-    //cdrv_interrupt_read(context, ERROR_CLOSED);
-    cdrv_interrupt_write(context, ERROR_CLOSED);
-    cdrv_close_fd(context, FDR_KEEP_PACKET | FDR | FDW);
+      if (context->send_term_info) {
+        cdrv_shutdown_send_exit(context);
+        context->send_term_info = 0;
+      }
 
-    if (context->send_term_info) {
-      cdrv_shutdown_send_exit(context);
-      context->send_term_info = 0;
-    }
+      return 0;
+    break; // }}}
 
-    return 0;
-  } // }}}
+    case 7: // status() {{{
+      // this should never be called
+      if (2 > rlen) *rbuf = driver_alloc(2);
 
-  if (command == 7) { // status() {{{
-    // this should never be called
-    if (2 > rlen) *rbuf = driver_alloc(2);
+      switch (context->process_status) {
+        case process_alive:
+          (*rbuf)[0] = 1;
+          (*rbuf)[1] = 0;
+        break;
+        case process_exited:
+          (*rbuf)[0] = 2;
+          (*rbuf)[1] = context->exit_code;
+        break;
+        case process_killed:
+          (*rbuf)[0] = 3;
+          (*rbuf)[1] = context->exit_code;
+        break;
+        default:
+          (*rbuf)[0] = 0;
+          (*rbuf)[1] = 0;
+        break;
+      }
 
-    switch (context->process_status) {
-      case process_alive:
-        (*rbuf)[0] = 1;
-        (*rbuf)[1] = 0;
-      break;
-      case process_exited:
-        (*rbuf)[0] = 2;
-        (*rbuf)[1] = context->exit_code;
-      break;
-      case process_killed:
-        (*rbuf)[0] = 3;
-        (*rbuf)[1] = context->exit_code;
-      break;
-      default:
-        (*rbuf)[0] = 0;
-        (*rbuf)[1] = 0;
-      break;
-    }
-
-    return 2;
-  } // }}}
+      return 2;
+    break; // }}}
+  }
 
   return -1;
 }
