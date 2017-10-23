@@ -44,7 +44,7 @@
 #define MAX_PACKET_SIZE (64 * 1024 * 1024) // 64MB (gen_tcp uses the same max)
 
 // payload of packets of this size and larger will be read to
-// subproc_context.packet instead of subproc_context.buffer
+// subproc_context.packet.packet instead of subproc_context.packet.buffer
 #define BIG_PACKET_SIZE 256
 
 // zero errno value will never occur in the wild, so it can be used to request
