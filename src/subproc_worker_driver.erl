@@ -384,7 +384,7 @@ reply_wait(Port, Interval) ->
   after Interval ->
       case erlang:port_info(Port, connected) of
         {connected, _} -> reply_wait(Port, Interval); % still alive
-        undefined -> {error, port_closed}
+        undefined -> {error, closed}
       end
   end.
 
