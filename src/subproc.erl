@@ -8,6 +8,25 @@
 %%%   STDIO redirected with `socketpair(2)', spawning them in process groups,
 %%%   and sending them signals.
 %%%
+%%%   == Configuration ==
+%%%
+%%%   Following application options (`application:set_env(subproc, Name,
+%%%   Value)') are recognized:
+%%%
+%%%   <ul>
+%%%     <li>`shutdown_timeout' ({@type timeout()}, default `infinity') --
+%%%         how long should unix subprocess supervisor wait for child
+%%%         processes to terminate before giving up (milliseconds)</li>
+%%%     <li>`shutdown_kill' ({@type boolean()}, default `false') -- when set
+%%%         to `true', after `shutdown_timeout' milliseconds unix subprocess
+%%%         supervisor will send <i>SIGKILL</i> to all remaining children and
+%%%         wait another `shutdown_timeout' for them to terminate</li>
+%%%     <li>`allow_exec' ({@type boolean()}, default `true') -- when `false',
+%%%         unix subprocess supervisor is not started; this means that
+%%%         {@link exec/3} doesn't work and {@link open/2} is the only way to
+%%%         spawn a {@type handle()}</li>
+%%%   </ul>
+%%%
 %%% @see subproc_unix
 %%% @end
 %%%---------------------------------------------------------------------------
