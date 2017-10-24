@@ -16,6 +16,13 @@ advantages:
 `subproc` can also spawn ports from already-opened descriptors, which is
 mainly intended for reading from STDIN with backpressure.
 
+Documentation
+-------------
+
+`subproc` is documented using EDoc. A local copy is generated with `make doc`
+command to `./doc/` directory. An already generated online copy is available
+at <http://dozzie.jarowit.net/api/erlang-subproc/>.
+
 Prior art
 ---------
 
