@@ -34,7 +34,7 @@
 %%% types {{{
 
 -record(state, {
-  port :: subproc_master_driver:handle(),
+  port :: subproc_master_driver:handle() | undefined,
   registry :: ets:tab() % port => ID, ID => port
 }).
 
@@ -73,7 +73,7 @@ start_link() ->
 
 -spec exec(file:filename(), [string()], Options :: [Option]) ->
     {ok, port() | RawInfo}
-  | {error, bad_owner | badarg | system_limit | ExecError | RequestError}
+  | {error, bad_owner | badarg | system_limit | not_allowed | ExecError | RequestError}
   when Option :: subproc:exec_option() | subproc:port_option()
                | subproc:read_option() | subproc:native_read_option(),
        RawInfo :: {ID :: subproc_master_driver:subproc_id(),
@@ -207,14 +207,19 @@ call(Request) ->
 
 init(_Args) ->
   process_flag(trap_exit, true),
-  MasterOptions = case shutdown_options() of
-    {ok, {Timeout, true = _KillFlag}} ->
-      [{shutdown_timeout, Timeout}, shutdown_kill];
-    {ok, {Timeout, false = _KillFlag}} ->
-      [{shutdown_timeout, Timeout}, no_shutdown_kill]
+  case application:get_env(allow_exec) of
+    {ok, true} ->
+      MasterOptions = case shutdown_options() of
+        {ok, {Timeout, true = _KillFlag}} ->
+          [{shutdown_timeout, Timeout}, shutdown_kill];
+        {ok, {Timeout, false = _KillFlag}} ->
+          [{shutdown_timeout, Timeout}, no_shutdown_kill]
+      end,
+      {ok, MasterPort} = subproc_master_driver:open(MasterOptions),
+      subproc_mdrv_reaper:watch(MasterPort);
+    {ok, false} ->
+      MasterPort = undefined
   end,
-  {ok, MasterPort} = subproc_master_driver:open(MasterOptions),
-  subproc_mdrv_reaper:watch(MasterPort),
   Registry = ets:new(subproc_port_registry, [set, protected]),
   State = #state{
     port = MasterPort,
@@ -226,7 +231,7 @@ init(_Args) ->
 %% @doc Clean up {@link gen_server} state.
 
 terminate(Reason, _State = #state{port = undefined, registry = Registry}) ->
-  % XXX: can't kill subprocesses, because master died
+  % XXX: can't kill subprocesses, because master is not running
   % kill the registered ports and close their autoclose descriptors
   port_foreach(
     fun(Port, _, _, FDs) -> shutdown_port(Port, {master_died,Reason}, FDs) end,
@@ -312,8 +317,13 @@ shutdown_port(Port, Reason, CloseFDs) ->
 %% @private
 %% @doc Handle {@link gen_server:call/2}.
 
+handle_call({exec, _Owner, _Command, _Args, _OptionList} = _Request, _From,
+            State = #state{port = undefined}) ->
+  {reply, {error, not_allowed}, State};
+
 handle_call({exec, Owner, Command, Args, OptionList} = _Request, _From,
-            State = #state{port = MasterPort, registry = Registry}) ->
+            State = #state{port = MasterPort, registry = Registry})
+when is_port(MasterPort) ->
   % FIXME: We parse one of the option lists (after splitting) twice, once for
   % checking for validity (for native port, `subproc_master_driver' options
   % for STDIO mode; for subproc port, `subproc_worker_driver' options for full
@@ -358,25 +368,35 @@ handle_call({reg, Port, PortType, ID, CloseFDs} = _Request, _From,
     false -> {reply, {error, badarg}, State}
   end;
 
+handle_call({open_port_failed, _ID} = _Request, _From,
+            State = #state{port = undefined}) ->
+  % this clause is only for completeness; this should never happen
+  {reply, {error, not_allowed}, State};
+
 handle_call({open_port_failed, ID} = _Request, _From,
-            State = #state{port = MasterPort}) ->
+            State = #state{port = MasterPort}) when is_port(MasterPort) ->
   Reply = subproc_master_driver:kill(MasterPort, ID, default),
   {reply, Reply, State};
 
 handle_call({kill, What, Signal} = _Request, _From,
             State = #state{port = MasterPort, registry = Registry}) ->
   case port_find_id(What, Registry) of
-    {ok, ID} ->
+    {ok, ID} when is_port(MasterPort) ->
       Reply = subproc_master_driver:kill(MasterPort, ID, Signal),
       {reply, Reply, State};
+    {ok, _ID} when MasterPort == undefined ->
+      % this clause is only for completeness; this should never happen
+      {reply, {error, badarg}, State};
     undefined ->
       {reply, {error, badarg}, State}
   end;
 
 handle_call(reload = _Request, _From, State = #state{port = MasterPort}) ->
   Result = case shutdown_options() of
-    {ok, {Timeout, KillFlag}} ->
+    {ok, {Timeout, KillFlag}} when is_port(MasterPort) ->
       subproc_master_driver:shutdown_options(MasterPort, Timeout, KillFlag);
+    {ok, {_Timeout, _KillFlag}} when MasterPort == undefined ->
+      ok;
     {error, badarg} ->
       {error, badarg}
   end,
@@ -397,7 +417,8 @@ handle_cast(_Request, State) ->
 %% @doc Handle incoming messages.
 
 handle_info({subproc_sup, MasterPort, EventData, FDs} = Message,
-            State = #state{port = MasterPort, registry = Registry}) ->
+            State = #state{port = MasterPort, registry = Registry})
+when is_port(MasterPort) ->
   case process_event(Message, Registry) of
     processed ->
       {noreply, State};
@@ -428,7 +449,7 @@ handle_info({subproc_sup, MasterPort, EventData, FDs} = Message,
   end;
 
 handle_info({'EXIT', MasterPort, Reason} = _Message,
-            State = #state{port = MasterPort}) ->
+            State = #state{port = MasterPort}) when is_port(MasterPort) ->
   subproc_master_driver:close(MasterPort),
   NewState = State#state{port = undefined},
   {stop, Reason, NewState};
@@ -436,8 +457,13 @@ handle_info({'EXIT', MasterPort, Reason} = _Message,
 handle_info({'EXIT', Port, _Reason} = _Message,
             State = #state{port = MasterPort, registry = Registry}) ->
   case port_autoclose(Port, Registry) of
-    undefined -> ignore;
-    ID -> subproc_master_driver:kill(MasterPort, ID, default)
+    undefined ->
+      ignore;
+    _ID when MasterPort == undefined ->
+      % this clause is only for completeness; this should never happen
+      ignore;
+    ID when is_port(MasterPort) ->
+      subproc_master_driver:kill(MasterPort, ID, default)
   end,
   {noreply, State};
 

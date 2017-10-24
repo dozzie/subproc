@@ -260,11 +260,14 @@
 %%   Options list is treated in proplist manner: the earlier options take
 %%   the precedence.
 %%
+%%   When the `allow_exec' option is set to `false', `{error,not_allowed}' is
+%%   returned.
+%%
 %% @see open/2
 
 -spec exec(file:filename(), [string()], Options :: [Option]) ->
     {ok, handle() | port() | RawInfo}
-  | {error, badarg | system_limit | ExecError | RequestError}
+  | {error, badarg | not_allowed | system_limit | ExecError | RequestError}
   when Option :: exec_option() | port_option() | read_option()
                | native_read_option(),
        RawInfo :: {ID :: pos_integer(), PID :: os_pid(), FDs :: stdio()},
@@ -523,6 +526,8 @@ format_error(not_owner) ->
 %% port spawning error (`open()', `exec()')
 format_error(system_limit) ->
   "too many spawned ports";
+format_error(not_allowed) ->
+  "executing subprocesses not allowed by configuration";
 
 %% errors from `exec()' (NOTE: OS errors from `send()', `recv()', `signal()'
 %% can be safely handled by `subproc_master:format_error()')

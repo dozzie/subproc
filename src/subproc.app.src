@@ -11,6 +11,7 @@
   {modules, []},
   {mod, {subproc_app, []}},
   {env, [
+    {allow_exec, true},
     {shutdown_timeout, infinity},
     {shutdown_kill, false}
   ]}
