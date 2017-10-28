@@ -3,7 +3,6 @@
   {vsn, "0.1.0"},
   {registered, [
     subproc_sup,
-    subproc_driver_loader,
     subproc_mdrv_reaper,
     subproc_master
   ]},
