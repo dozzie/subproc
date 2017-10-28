@@ -1,0 +1,12 @@
+version 0.2.0
+
+  * Documented application options.
+  * Added "allow_exec" option that prevents subprocess supervisor from
+    starting if the application will only be used for ports from already
+    opened desciptors.
+  * Minor performance improvements in port driver.
+
+version 0.1.0
+
+  * Initial release.
+
