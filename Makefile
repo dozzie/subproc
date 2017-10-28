@@ -79,6 +79,8 @@ install: install-erlang install-doc
 
 install-erlang: app
 	$(call install-wildcard,644,ebin/*,$(DESTDIR)$(ERL_INSTALL_LIB_DIR)/ebin)
+	$(call install-wildcard,755,priv/*.so,$(DESTDIR)$(ERL_INSTALL_LIB_DIR)/priv)
+	$(call install,755,priv/subproc_unix_supervisor,$(DESTDIR)$(ERL_INSTALL_LIB_DIR)/priv)
 
 install-doc: edoc
 	$(call install-wildcard,644,doc/*.html doc/*.png doc/*.css,$(DESTDIR)$(DOCDIR)/html)
