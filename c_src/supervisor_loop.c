@@ -2,6 +2,7 @@
 
 #include <string.h>
 #include <stdio.h> // snprintf()
+#include <stdlib.h>
 
 #include <unistd.h>
 #include <sys/types.h>
@@ -679,8 +680,6 @@ int child_spawn(struct comm_t *cmd, child_t *child, void *buffer, int *fds)
     }
   }
 
-  // TODO: set environment
-
   struct sigaction ignore_action;
   memset(&ignore_action, 0, sizeof(ignore_action));
   ignore_action.sa_handler = SIG_IGN;
@@ -689,7 +688,7 @@ int child_spawn(struct comm_t *cmd, child_t *child, void *buffer, int *fds)
     if ((cmd->exec_opts.sigmask & (((uint64_t)1) << (sig - 1))) != 0)
       sigaction(sig, &ignore_action, NULL);
 
-  execve(cmd->exec_opts.command, cmd->exec_opts.argv, NULL);
+  execve(cmd->exec_opts.command, cmd->exec_opts.argv, cmd->exec_opts.env);
   // if we got here, exec() must have failed
   int error[2] = { STAGE_EXEC, errno };
   send(fds_confirm[WRITE_END], error, sizeof(error), MSG_NOSIGNAL);
