@@ -75,6 +75,8 @@
                      | {user, uid() | string()}
                      | {group, gid() | string()}
                      | {cd, file:filename()}
+                     | {environ, map()}
+                     | {environ_pass, [string()]}
                      | {argv0, file:filename()}.
 %% Options controlling how the subprocess is executed.
 %%
@@ -109,6 +111,10 @@
 %%       root rights</li>
 %%   <li>`{cd,_}' -- when set, the subprocess will be spawned in specified
 %%       directory</li>
+%%   <li>`{environ,_}' -- set environment variables for the subprocess.
+%%       Overrides `environ_pass'</li>
+%%   <li>`{environ_pass,_}' -- list of environment variables in the current
+%%       environment to pass through to the subprocess</li>
 %%   <li>`{argv0,_}' -- when set, process name (sometimes called `argv[0]' or
 %%       `$0') will be set to this value</li>
 %% </ul>

@@ -23,8 +23,7 @@ struct comm_t {
       char *command;
       char **argv;
       char *cwd;
-      // TODO: struct { char *name; char *value } *env_set;
-      // TODO: char **env_clear;
+      char **env;
       unsigned int termsig;
       uint64_t sigmask; // ignored signals
       // modes:

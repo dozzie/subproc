@@ -37,6 +37,7 @@
 #define OPT_GROUP     0x47 // getgrnam()
 #define OPT_CWD       0x43
 #define OPT_ARGV0     0x30
+#define OPT_ENV       0x45
 
 //----------------------------------------------------------------------------
 
@@ -106,11 +107,17 @@ void free_command(struct comm_t *comm)
     comm->exec_opts.argv = NULL;
   }
 
-  // TODO: comm->exec_opts.envp, once it's added
-
   if (comm->exec_opts.cwd != NULL) {
     free(comm->exec_opts.cwd);
     comm->exec_opts.cwd = NULL;
+  }
+
+  if (comm->exec_opts.env != NULL) {
+    char **ptr;
+    for (ptr = comm->exec_opts.env; *ptr != NULL; ++ptr)
+      free(*ptr);
+    free(comm->exec_opts.env);
+    comm->exec_opts.env = NULL;
   }
 }
 
@@ -203,6 +210,16 @@ int get_group_gid(char *group, gid_t *gid)
   return 0;
 }
 
+static
+void free_env(struct comm_t *comm) {
+  char **env;
+  env = comm->exec_opts.env;
+  while (*env != NULL)
+    free(*env++);
+  free(comm->exec_opts.env);
+  comm->exec_opts.env = NULL;
+}
+
 //----------------------------------------------------------------------------
 
 static
@@ -257,11 +274,10 @@ int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
       return ERR_PARSE;
   }
 
-  // TODO: list of env vars to set
-  // TODO: list of env vars to clear
-
   char *argv0;
   char *ugname;
+  size_t items;
+  char **env_set;
   while (read_at < size) {
     switch (data[read_at++]) {
       // numeric options
@@ -334,6 +350,22 @@ int parse_exec_command(unsigned char *data, size_t size, struct comm_t *comm)
         if (comm->exec_opts.argv[0] != comm->exec_opts.command)
           free(comm->exec_opts.argv[0]);
         comm->exec_opts.argv[0] = argv0;
+      break;
+      case OPT_ENV:
+        if (comm->exec_opts.env != NULL)
+          free_env(comm);
+        if (size - read_at < 2)
+          return ERR_PARSE;
+        items = unpack16(data + read_at);
+        read_at += 2;
+        comm->exec_opts.env = env_set = calloc(items, sizeof(char *));
+        while(items-- > 0) {
+          if ((*env_set = parse_nonempty_string(data, size, &read_at)) == NULL) {
+            free_env(comm);
+            return ERR_PARSE;
+          }
+          env_set += 1;
+        }
       break;
 
       default:

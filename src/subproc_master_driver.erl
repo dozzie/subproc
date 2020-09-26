@@ -217,6 +217,8 @@ close(Port) ->
                | {user, uid() | user()}
                | {group, gid() | group()}
                | {cd, file:filename()}
+               | {environ, map()}
+               | {environ_pass, [string()]}
                | {argv0, file:filename()},
        STDIO :: {bidir, FDRW} | {in, FDR} | {out, FDW} | {in_out, {FDR, FDW}},
        FDRW :: subproc:os_fd(),
@@ -551,6 +553,8 @@ build_exec_request(Command, Args, Options) ->
   group :: undefined | gid() | group(),
   nice  :: undefined | integer(),
   cwd   :: undefined | file:filename(),
+  environ :: undefined | map(),
+  environ_pass :: undefined | [string()],
   argv0 :: undefined | file:filename()
 }).
 
@@ -614,6 +618,10 @@ exec_option({group, Group}, Opts) when is_integer(Group); is_list(Group) ->
   Opts#exec{group = Group};
 exec_option({cd, Dir}, Opts) when is_list(Dir) ->
   Opts#exec{cwd = Dir};
+exec_option({environ, Env}, Opts) when is_map(Env) ->
+  Opts#exec{environ = Env};
+exec_option({environ_pass, Vars}, Opts) when is_list(Vars) ->
+  Opts#exec{environ_pass = Vars};
 exec_option({argv0, Name}, Opts) when is_list(Name) ->
   Opts#exec{argv0 = Name}.
 
@@ -642,6 +650,8 @@ is_option({nice, _})  -> true;
 is_option({user, _})  -> true;
 is_option({group, _}) -> true;
 is_option({cd, _})    -> true;
+is_option({environ, _}) -> true;
+is_option({environ_pass, _}) -> true;
 is_option({argv0, _}) -> true;
 is_option(_Value) -> false.
 
@@ -718,6 +728,7 @@ build_exec_options(Opts = #exec{}) ->
   end,
   SigIgnMask = make_signal_mask(Opts#exec.ignore_signals, 0),
   OptSigIgn = <<16#73:8, SigIgnMask:64>>,
+  OptEnv = build_environment_variables(Opts#exec.environ, Opts#exec.environ_pass),
   OptNice = case Opts of
     #exec{nice = undefined} -> [];
     #exec{nice = Nice} -> <<16#70:8, Nice:8>>
@@ -741,7 +752,7 @@ build_exec_options(Opts = #exec{}) ->
     #exec{argv0 = Name} -> pack_tagged_string(16#30, Name)
   end,
   _Result = [
-    OptTermSig, OptSigIgn, OptCwd, OptUser, OptGroup, OptNice, OptArgv0
+    OptTermSig, OptSigIgn, OptCwd, OptUser, OptGroup, OptNice, OptEnv, OptArgv0
   ].
 
 %% @doc Make a signal mask from list of signals (names and/or numbers).
@@ -762,6 +773,29 @@ make_signal_mask([SigName | Rest], Mask) when is_atom(SigName) ->
   end;
 make_signal_mask(_SignalList, _Mask) ->
   erlang:error(bad_signal).
+
+%% @doc Build the list of environment variables & values to use
+
+-spec build_environment_variables(undefined | map(), undefined | [iolist()]) ->
+   iolist().
+
+build_environment_variables(undefined, Pass) ->
+  build_environment_variables(#{}, Pass);
+build_environment_variables(Set, undefined) ->
+  build_environment_variables(Set, []);
+build_environment_variables(SetVars, Pass) ->
+  PassVars0 = [{Var, os:getenv(Var)} || Var <- Pass],
+  PassVars1 = [VarDef || {_, Value} = VarDef <- PassVars0, Value =/= false],
+  PassVars = maps:from_list(PassVars1),
+  AllVars = maps:merge(PassVars, SetVars),
+
+  KVs = maps:to_list(AllVars),
+  Strings = [pack_string([K, "=", V]) || {K, V} <- KVs],
+  case Strings of
+    [] -> [];
+    Data ->
+      [<<16#45:8>>, <<(length(Strings)):16>>, Strings]
+  end.
 
 %% }}}
 %%----------------------------------------------------------
